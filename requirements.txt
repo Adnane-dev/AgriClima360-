@@ -1,21 +1,23 @@
-# Core dependencies
-streamlit>=1.28.0
-pandas>=2.0.0
-numpy>=1.24.0
-plotly>=5.17.0
-requests>=2.31.0
+# Core dependencies - versions stables
+streamlit==1.28.1
+pandas==2.1.4
+numpy==1.24.3
+plotly==5.18.0
+requests==2.31.0
 
-# Massive Data Visualization
-dask==2023.8.0
-datashader==0.15.2
+# Data visualization (compatible versions)
+bokeh==3.3.0
 holoviews==1.17.1
-hvplot==0.9.0
 panel==1.3.0
-bokeh==3.2.1
+
+# Optional: Comment out if causing issues
+# dask==2023.8.0
+# datashader==0.15.2
+# hvplot==0.9.0
 
 # Advanced features
-pyarrow>=14.0.0
-openpyxl>=3.1.0
+pyarrow==14.0.2
+openpyxl==3.1.2
 
 # Optional for export
-xlsxwriter>=3.1.0
+xlsxwriter==3.1.9
