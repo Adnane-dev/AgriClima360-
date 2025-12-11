@@ -17,10 +17,6 @@ import time
 import io
 from streamlit.components.v1 import html
 import base64
-import tempfile
-import plotly.io as pio
-from fpdf import FPDF
-import os
 
 # Configuration de la page
 st.set_page_config(
@@ -37,7 +33,7 @@ st.set_page_config(
 BASE_URL = "https://www.ncei.noaa.gov/cdo-web/api/v2/"
 
 # ⚠️ IMPORTANT: Obtenez votre token gratuit sur https://www.ncdc.noaa.gov/cdo-web/token
-NOAA_TOKEN = st.secrets.get("NOAA_TOKEN", "YOUR_TOKEN_HERE")
+NOAA_TOKEN = st.secrets.get("NOAA_TOKEN", "oAlEkhGLpUtHCIGoUOepslRpcWmtLJMM")
 
 @st.cache_data(ttl=3600)
 def get_noaa_data(endpoint, params=None, token=NOAA_TOKEN):
@@ -588,241 +584,6 @@ def create_correlation_matrix_interactive(df):
     return fig
 
 # =============================================================
-# NOUVELLE FONCTION : GÉNÉRATION DE PDF
-# =============================================================
-
-def generate_pdf_report(df, kpis, temp_fig, heatmap_fig, map_fig, radar_fig):
-    """
-    Génère un rapport PDF avec les données et graphiques climatiques.
-    
-    Args:
-        df: DataFrame contenant les données climatiques
-        kpis: Dictionnaire des indicateurs clés
-        temp_fig: Figure Plotly de l'évolution des températures
-        heatmap_fig: Figure Plotly de la heatmap
-        map_fig: Figure Plotly de la carte animée
-        radar_fig: Figure Plotly du graphique radar
-    
-    Returns:
-        bytes: Contenu du PDF à télécharger
-    """
-    
-    # Créer un PDF
-    pdf = FPDF(orientation='P', unit='mm', format='A4')
-    pdf.set_auto_page_break(auto=True, margin=15)
-    
-    # Page 1 : Page de titre et résumé
-    pdf.add_page()
-    
-    # Titre
-    pdf.set_font('Helvetica', 'B', 24)
-    pdf.set_text_color(34, 139, 34)  # Vert forêt
-    pdf.cell(0, 20, '🌍 Rapport AgriClima360', ln=1, align='C')
-    
-    # Sous-titre
-    pdf.set_font('Helvetica', 'I', 14)
-    pdf.set_text_color(100, 100, 100)
-    pdf.cell(0, 10, 'Dashboard Climatique Avancé', ln=1, align='C')
-    
-    # Date
-    pdf.set_font('Helvetica', '', 12)
-    pdf.cell(0, 10, f'Généré le {datetime.now().strftime("%d/%m/%Y à %H:%M")}', ln=1, align='C')
-    
-    pdf.ln(10)
-    
-    # Ligne de séparation
-    pdf.set_draw_color(34, 139, 34)
-    pdf.set_line_width(0.5)
-    pdf.line(10, pdf.get_y(), 200, pdf.get_y())
-    pdf.ln(15)
-    
-    # Résumé exécutif
-    pdf.set_font('Helvetica', 'B', 16)
-    pdf.set_text_color(0, 0, 0)
-    pdf.cell(0, 10, '📊 Résumé Exécutif', ln=1)
-    
-    pdf.set_font('Helvetica', '', 12)
-    resume_text = f"""
-    Ce rapport présente une analyse climatique complète basée sur les données collectées.
-    Période analysée: {df['year'].min()} - {df['year'].max()}
-    Nombre de points de données: {len(df):,}
-    Nombre d'années: {kpis.get('nb_annees', 0)}
-    Régions couvertes: {kpis.get('continents', 1)} continent(s)
-    """
-    pdf.multi_cell(0, 8, resume_text)
-    pdf.ln(10)
-    
-    # Indicateurs Clés
-    pdf.set_font('Helvetica', 'B', 16)
-    pdf.cell(0, 10, '📈 Indicateurs Clés de Performance', ln=1)
-    
-    # Tableau des KPIs
-    pdf.set_font('Helvetica', 'B', 12)
-    col_widths = [70, 40, 40, 40]
-    headers = ['Indicateur', 'Valeur', 'Unité', 'Tendance']
-    
-    for i, header in enumerate(headers):
-        pdf.cell(col_widths[i], 10, header, border=1, align='C', fill=True)
-    pdf.ln()
-    
-    # Données des KPIs
-    pdf.set_font('Helvetica', '', 11)
-    kpi_rows = [
-        ['Température Moyenne', f"{kpis.get('temp_moy', 0):.1f}", '°C', f"{kpis.get('temp_trend', 0):+.2f}°C/siècle"],
-        ['Précipitations Totales', f"{kpis.get('pluie_totale', 0):,.0f}", 'mm', f"{kpis.get('nb_annees', 0)} années"],
-        ['Température Maximum', f"{kpis.get('temp_max', 0):.1f}", '°C', '-'],
-        ['Température Minimum', f"{kpis.get('temp_min', 0):.1f}", '°C', '-'],
-        ['Humidité Moyenne', f"{kpis.get('humidite_moy', 0):.1f}", '%', '-'],
-        ['Radiation Solaire', f"{kpis.get('solar_avg', 0):.0f}", 'W/m²', '-'],
-        ['Vitesse du Vent', f"{kpis.get('wind_avg', 0):.1f}", 'm/s', '-'],
-        ['Jours de Canicule', f"{kpis.get('heatwaves', 0):.1f}", '%', '-'],
-        ['Risque de Sécheresse', f"{kpis.get('drought_risk', 0):.1f}", '%', '-']
-    ]
-    
-    for row in kpi_rows:
-        for i, cell in enumerate(row):
-            pdf.cell(col_widths[i], 8, cell, border=1, align='C')
-        pdf.ln()
-    
-    pdf.ln(10)
-    
-    # Page 2 : Graphiques
-    pdf.add_page()
-    
-    # Graphique 1 : Évolution des températures
-    if temp_fig and temp_fig.data:
-        pdf.set_font('Helvetica', 'B', 14)
-        pdf.cell(0, 10, '📈 Évolution des Températures', ln=1)
-        
-        # Sauvegarder le graphique en image temporaire
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmpfile:
-            temp_fig.write_image(tmpfile.name, width=800, height=400)
-            pdf.image(tmpfile.name, x=10, y=pdf.get_y(), w=190)
-            pdf.ln(100)
-            os.unlink(tmpfile.name)
-    
-    pdf.ln(10)
-    
-    # Graphique 2 : Heatmap
-    if heatmap_fig and heatmap_fig.data:
-        pdf.set_font('Helvetica', 'B', 14)
-        pdf.cell(0, 10, '📅 Heatmap des Températures', ln=1)
-        
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmpfile:
-            heatmap_fig.write_image(tmpfile.name, width=800, height=400)
-            pdf.image(tmpfile.name, x=10, y=pdf.get_y(), w=190)
-            pdf.ln(100)
-            os.unlink(tmpfile.name)
-    
-    # Page 3 : Suite des graphiques
-    pdf.add_page()
-    
-    # Graphique 3 : Carte
-    if map_fig and map_fig.data:
-        pdf.set_font('Helvetica', 'B', 14)
-        pdf.cell(0, 10, '🗺️ Carte des Températures Mondiales', ln=1)
-        
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmpfile:
-            # Pour la carte, on peut réduire la taille pour mieux tenir dans le PDF
-            map_fig.update_layout(height=400)
-            map_fig.write_image(tmpfile.name, width=800, height=400)
-            pdf.image(tmpfile.name, x=10, y=pdf.get_y(), w=190)
-            pdf.ln(100)
-            os.unlink(tmpfile.name)
-    
-    pdf.ln(10)
-    
-    # Graphique 4 : Radar
-    if radar_fig and radar_fig.data:
-        pdf.set_font('Helvetica', 'B', 14)
-        pdf.cell(0, 10, '📊 Graphique Radar', ln=1)
-        
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmpfile:
-            radar_fig.write_image(tmpfile.name, width=600, height=400)
-            pdf.image(tmpfile.name, x=30, y=pdf.get_y(), w=150)
-            pdf.ln(100)
-            os.unlink(tmpfile.name)
-    
-    # Page 4 : Statistiques détaillées
-    pdf.add_page()
-    
-    pdf.set_font('Helvetica', 'B', 16)
-    pdf.cell(0, 10, '📋 Statistiques Détailées', ln=1)
-    
-    if not df.empty:
-        # Statistiques pour les variables numériques principales
-        numeric_cols = ['tavg', 'tmax', 'tmin', 'prcp', 'humidity', 'wind_speed', 'solar_radiation']
-        available_cols = [col for col in numeric_cols if col in df.columns]
-        
-        if available_cols:
-            pdf.set_font('Helvetica', 'B', 12)
-            headers = ['Variable', 'Moyenne', 'Médiane', 'Min', 'Max', 'Écart-type']
-            col_widths = [40, 30, 30, 25, 25, 35]
-            
-            # En-tête
-            for i, header in enumerate(headers):
-                pdf.cell(col_widths[i], 10, header, border=1, align='C', fill=True)
-            pdf.ln()
-            
-            # Données
-            pdf.set_font('Helvetica', '', 10)
-            for col in available_cols[:8]:  # Limiter à 8 variables
-                if col == 'tavg':
-                    label = 'Temp Moy (°C)'
-                elif col == 'tmax':
-                    label = 'Temp Max (°C)'
-                elif col == 'tmin':
-                    label = 'Temp Min (°C)'
-                elif col == 'prcp':
-                    label = 'Précip (mm)'
-                elif col == 'humidity':
-                    label = 'Humidité (%)'
-                elif col == 'wind_speed':
-                    label = 'Vent (m/s)'
-                elif col == 'solar_radiation':
-                    label = 'Ray. Sol. (W/m²)'
-                else:
-                    label = col[:15]
-                
-                values = [
-                    label,
-                    f"{df[col].mean():.2f}",
-                    f"{df[col].median():.2f}",
-                    f"{df[col].min():.2f}",
-                    f"{df[col].max():.2f}",
-                    f"{df[col].std():.2f}"
-                ]
-                
-                for i, value in enumerate(values):
-                    pdf.cell(col_widths[i], 8, value, border=1, align='C')
-                pdf.ln()
-    
-    pdf.ln(10)
-    
-    # Recommandations
-    pdf.set_font('Helvetica', 'B', 14)
-    pdf.cell(0, 10, '🎯 Recommandations', ln=1)
-    
-    pdf.set_font('Helvetica', '', 11)
-    recommendations = """
-    1. Surveiller régulièrement les indicateurs de température et précipitations
-    2. Adapter les pratiques agricoles aux tendances climatiques observées
-    3. Mettre en place des systèmes d'alerte précoce pour les événements extrêmes
-    4. Diversifier les cultures pour réduire la vulnérabilité climatique
-    5. Intégrer les données climatiques dans la planification agricole
-    """
-    pdf.multi_cell(0, 8, recommendations)
-    
-    # Pied de page
-    pdf.set_y(-30)
-    pdf.set_font('Helvetica', 'I', 10)
-    pdf.set_text_color(150, 150, 150)
-    pdf.cell(0, 10, 'Rapport généré automatiquement par AgriClima360', ln=1, align='C')
-    pdf.cell(0, 8, 'Pour des analyses plus détaillées, consultez le dashboard interactif', ln=1, align='C')
-    
-    return pdf.output(dest='S').encode('latin-1')
-
-# =============================================================
 # 4. INTERFACE STREAMLIT AVANCÉE
 # =============================================================
 
@@ -916,7 +677,7 @@ def main():
     # Chargement des données
     with st.spinner("⏳ Chargement des données enrichies..."):
         if data_source == "API NOAA (Réelles)":
-            if NOAA_TOKEN == "YOUR_TOKEN_HERE":
+            if NOAA_TOKEN == "YOUR_TOKEN_HERE" or NOAA_TOKEN == "oAlEkhGLpUtHCIGoUOepslRpcWmtLJMM":
                 st.error("❌ Token NOAA non configuré. Créez un fichier `.streamlit/secrets.toml` avec:\n```toml\nNOAA_TOKEN = 'votre_token'\n```")
                 df = generate_enhanced_sample_data()
             else:
@@ -1017,18 +778,27 @@ def main():
         
         with col1:
             st.markdown("#### 📈 Évolution Temporelle (Animée)")
-            fig_temp = create_temperature_evolution(df)
-            st.plotly_chart(fig_temp, use_container_width=True, config={'displayModeBar': True, 'scrollZoom': True})
+            st.plotly_chart(
+                create_temperature_evolution(df),
+                use_container_width=True,
+                config={'displayModeBar': True, 'scrollZoom': True}
+            )
         
         with col2:
             st.markdown("#### 💧 Précipitations (Animées)")
-            fig_prcp = create_precipitation_chart(df)
-            st.plotly_chart(fig_prcp, use_container_width=True, config={'displayModeBar': True, 'scrollZoom': True})
+            st.plotly_chart(
+                create_precipitation_chart(df),
+                use_container_width=True,
+                config={'displayModeBar': True, 'scrollZoom': True}
+            )
         
         # Heatmap interactive
         st.markdown("#### 📅 Heatmap Interactive")
-        fig_heatmap = create_interactive_heatmap(df)
-        st.plotly_chart(fig_heatmap, use_container_width=True, config={'displayModeBar': True, 'scrollZoom': True})
+        st.plotly_chart(
+            create_interactive_heatmap(df),
+            use_container_width=True,
+            config={'displayModeBar': True, 'scrollZoom': True}
+        )
         
         # Instructions pour les animations
         with st.expander("ℹ️ Comment utiliser les animations"):
@@ -1061,13 +831,17 @@ def main():
             
             with col2:
                 st.markdown("#### Heatmap Interactive")
-                fig_heatmap = create_interactive_heatmap(df)
-                st.plotly_chart(fig_heatmap, use_container_width=True)
+                st.plotly_chart(
+                    create_interactive_heatmap(df),
+                    use_container_width=True
+                )
             
             # Graphique stream
             st.markdown("#### Graphique Stream (Courbes Empilées)")
-            fig_stream = create_stream_graph(df)
-            st.plotly_chart(fig_stream, use_container_width=True)
+            st.plotly_chart(
+                create_stream_graph(df),
+                use_container_width=True
+            )
         
         with tab2:
             col1, col2 = st.columns(2)
@@ -1084,8 +858,10 @@ def main():
         
         with tab3:
             st.markdown("#### Matrice de Corrélation Interactive")
-            fig_corr = create_correlation_matrix_interactive(df)
-            st.plotly_chart(fig_corr, use_container_width=True)
+            st.plotly_chart(
+                create_correlation_matrix_interactive(df),
+                use_container_width=True
+            )
             
             # Statistiques descriptives avec style
             st.markdown("#### 📊 Statistiques Descriptives Avancées")
@@ -1574,7 +1350,7 @@ def main():
                 # Options d'export
                 export_format = st.selectbox(
                     "Format d'export:",
-                    ["CSV", "JSON", "Excel", "Parquet", "PDF Rapport"]
+                    ["CSV", "JSON", "Excel", "Parquet"]
                 )
                 
                 if export_format == "CSV":
@@ -1613,7 +1389,7 @@ def main():
                         key='download-excel'
                     )
                 
-                elif export_format == "Parquet":
+                else:  # Parquet
                     # Pour Parquet, on utilise un buffer temporaire
                     import tempfile
                     try:
@@ -1636,82 +1412,6 @@ def main():
                             )
                     except ImportError:
                         st.error("La bibliothèque pyarrow est requise pour l'export Parquet. Installez-la avec `pip install pyarrow`")
-                
-                elif export_format == "PDF Rapport":
-                    # Section pour générer le PDF
-                    st.markdown("##### Génération de Rapport PDF")
-                    
-                    # Options du rapport
-                    with st.expander("⚙️ Options du rapport PDF"):
-                        include_temp_chart = st.checkbox("Inclure le graphique d'évolution des températures", value=True)
-                        include_heatmap = st.checkbox("Inclure la heatmap", value=True)
-                        include_map = st.checkbox("Inclure la carte mondiale", value=True)
-                        include_radar = st.checkbox("Inclure le graphique radar", value=True)
-                        report_title = st.text_input("Titre du rapport", value="Rapport AgriClima360")
-                    
-                    if st.button("📄 Générer le Rapport PDF", type="primary"):
-                        with st.spinner("⏳ Génération du rapport PDF en cours..."):
-                            try:
-                                # Préparer les figures pour le PDF
-                                temp_fig_pdf = create_temperature_evolution(df) if include_temp_chart else None
-                                heatmap_fig_pdf = create_interactive_heatmap(df) if include_heatmap else None
-                                map_fig_pdf = create_animated_temperature_map(df) if include_map else None
-                                
-                                # Pour le radar, on prend l'année la plus récente
-                                if include_radar and 'year' in df.columns:
-                                    radar_year = df['year'].max()
-                                    radar_fig_pdf = create_radar_chart(df, radar_year)
-                                else:
-                                    radar_fig_pdf = None
-                                
-                                # Générer le PDF
-                                pdf_bytes = generate_pdf_report(
-                                    df=df,
-                                    kpis=kpis,
-                                    temp_fig=temp_fig_pdf,
-                                    heatmap_fig=heatmap_fig_pdf,
-                                    map_fig=map_fig_pdf,
-                                    radar_fig=radar_fig_pdf
-                                )
-                                
-                                # Nom du fichier avec timestamp
-                                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                                filename = f"{report_title.replace(' ', '_')}_{timestamp}.pdf"
-                                
-                                # Afficher le bouton de téléchargement
-                                st.success("✅ Rapport PDF généré avec succès !")
-                                
-                                # Bouton de téléchargement
-                                st.download_button(
-                                    label="📥 Télécharger le Rapport PDF",
-                                    data=pdf_bytes,
-                                    file_name=filename,
-                                    mime="application/pdf",
-                                    key='download-pdf-report'
-                                )
-                                
-                                # Aperçu du contenu
-                                with st.expander("📋 Aperçu du contenu du rapport"):
-                                    st.markdown("""
-                                    **Sections incluses dans le rapport:**
-                                    
-                                    1. **Page de titre** avec métadonnées
-                                    2. **Résumé exécutif** avec contexte d'analyse
-                                    3. **Indicateurs Clés (KPIs)** sous forme de tableau
-                                    4. **Graphiques climatiques** (selon vos sélections)
-                                    5. **Statistiques détaillées** par variable
-                                    6. **Recommandations** pour l'agriculture
-                                    
-                                    **Caractéristiques:**
-                                    • Format: PDF A4, 3-4 pages
-                                    • Style professionnel avec mise en forme
-                                    • Données actualisées selon vos filtres
-                                    • Génération automatique avec timestamp
-                                    """)
-                                
-                            except Exception as e:
-                                st.error(f"❌ Erreur lors de la génération du PDF: {str(e)}")
-                                st.info("💡 Assurez-vous d'avoir installé les bibliothèques requises: `pip install fpdf kaleido`")
             
             with col2:
                 st.markdown("##### Export des Visualisations")
@@ -1750,8 +1450,19 @@ def main():
                 st.markdown("---")
                 st.markdown("##### Rapport Automatique")
                 
-                # Note: Cette section est maintenant déplacée dans l'option "PDF Rapport"
-                st.info("La génération de rapport PDF est maintenant disponible dans l'option 'PDF Rapport' ci-dessus.")
+                if st.button("📄 Générer un rapport PDF"):
+                    with st.spinner("Génération du rapport..."):
+                        # Ici vous pourriez intégrer une librairie comme reportlab ou weasyprint
+                        # Pour l'exemple, on montre juste un message
+                        st.success("Fonctionnalité de rapport PDF à implémenter avec reportlab ou weasyprint")
+                        st.markdown("""
+                        **Contenu du rapport :**
+                        1. Résumé exécutif
+                        2. KPIs principaux
+                        3. Visualisations clés
+                        4. Analyses statistiques
+                        5. Recommandations
+                        """)
     
     # Footer avec informations
     st.markdown("---")
@@ -1761,7 +1472,7 @@ def main():
             <p>🌍 AgriClima360 - Dashboard Climatique Avancé avec Animations Interactives</p>
             <p style='font-size: 0.8em; color: gray;'>
                 Données fournies par NOAA National Centers for Environmental Information | 
-                <strong>Fonctionnalités avancées</strong> : Animations, 3D, Carte interactive, Graphiques radar, Export PDF
+                <strong>Fonctionnalités avancées</strong> : Animations, 3D, Carte interactive, Graphiques radar
             </p>
         </div>
         """,
