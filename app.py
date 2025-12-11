@@ -32,16 +32,18 @@ try:
     from datashader import reductions
     from datashader.colors import inferno, viridis
     import holoviews as hv
+    hv.extension('bokeh', 'matplotlib')  # Initialiser icis
     from holoviews.operation.datashader import datashade, dynspread
     import hvplot.pandas
     import hvplot.dask
     import panel as pn
+    pn.extension()  # Initialiser Panel
     from bokeh.plotting import figure
     from bokeh.models import HoverTool, ColorBar, LinearColorMapper
     from bokeh.palettes import Viridis256, Inferno256
     from bokeh.embed import components
     from bokeh.resources import CDN
-    
+    from bokeh.io import export_png
     hv.extension('bokeh')
     pn.extension()
     DATA_VIZ_ENABLED = True
@@ -49,7 +51,40 @@ try:
 except ImportError as e:
     DATA_VIZ_ENABLED = False
     st.warning(f"⚠️ Visualisation de données massives désactivée: {e}")
-
+def get_dataframe_length(df):
+    """Retourne le nombre de lignes d'un DataFrame, compatible avec pandas et dask."""
+    if df is None:
+        return 0
+    
+    if DATA_VIZ_ENABLED and isinstance(df, dd.DataFrame):
+        try:
+            # Pour Dask DataFrame, calculer la taille
+            with ProgressBar():
+                return df.shape[0].compute()
+        except Exception as e:
+            try:
+                # Alternative: compter les lignes
+                with ProgressBar():
+                    return len(df.index).compute()
+            except:
+                # Estimation basée sur les partitions
+                try:
+                    if hasattr(df, 'npartitions'):
+                        # Estimation grossière: 10000 lignes par partition
+                        return df.npartitions * 10000
+                    else:
+                        return 0
+                except:
+                    return 0
+    else:
+        # Pour pandas DataFrame
+        try:
+            return len(df)
+        except:
+            try:
+                return df.shape[0]
+            except:
+                return 0
 # =============================================================
 # CONFIGURATION
 # =============================================================
@@ -373,6 +408,161 @@ def compute_kpis(df):
 # =============================================================
 # 3. FONCTIONS DE VISUALISATION MASSIVES (DASK + DATASHADER)
 # =============================================================
+def create_radar_chart(df, year=None):
+    """Crée un graphique radar pour une année spécifique."""
+    if df.empty or 'year' not in df.columns:
+        return go.Figure()
+    
+    if year is None:
+        year = df['year'].max()
+    
+    year_data = df[df['year'] == year]
+    
+    if len(year_data) == 0:
+        return go.Figure()
+    
+    # Vérifier que toutes les colonnes nécessaires existent
+    required_cols = ['tavg', 'tmax', 'tmin', 'prcp', 'humidity', 'wind_speed']
+    missing_cols = [col for col in required_cols if col not in year_data.columns]
+    
+    if missing_cols:
+        # Créer des colonnes manquantes avec des valeurs par défaut
+        for col in missing_cols:
+            if col == 'prcp':
+                year_data[col] = 0
+            elif col in ['tavg', 'tmax', 'tmin']:
+                year_data[col] = 20
+            elif col == 'humidity':
+                year_data[col] = 50
+            elif col == 'wind_speed':
+                year_data[col] = 5
+    
+    avg_data = year_data[required_cols].mean()
+    
+    # Normaliser les données pour le radar
+    max_vals = df[required_cols].max()
+    min_vals = df[required_cols].min()
+    
+    normalized_data = (avg_data - min_vals) / (max_vals - min_vals)
+    
+    fig = go.Figure(data=go.Scatterpolar(
+        r=[
+            normalized_data['tavg'],
+            normalized_data['tmax'],
+            normalized_data['tmin'],
+            normalized_data['prcp'] / 100,  # Réduire l'échelle des précipitations
+            normalized_data['humidity'] / 100,
+            normalized_data['wind_speed'] / 20
+        ],
+        theta=['Temp Moy', 'Temp Max', 'Temp Min', 'Précip', 'Humidité', 'Vent'],
+        fill='toself',
+        name=f'Année {year}',
+        line_color='blue',
+        opacity=0.8
+    ))
+    
+    # Ajouter des données de référence (moyenne historique)
+    ref_data = df[required_cols].mean()
+    normalized_ref = (ref_data - min_vals) / (max_vals - min_vals)
+    
+    fig.add_trace(go.Scatterpolar(
+        r=[
+            normalized_ref['tavg'],
+            normalized_ref['tmax'],
+            normalized_ref['tmin'],
+            normalized_ref['prcp'] / 100,
+            normalized_ref['humidity'] / 100,
+            normalized_ref['wind_speed'] / 20
+        ],
+        theta=['Temp Moy', 'Temp Max', 'Temp Min', 'Précip', 'Humidité', 'Vent'],
+        fill='toself',
+        name='Moyenne historique',
+        line_color='gray',
+        opacity=0.3
+    ))
+    
+    fig.update_layout(
+        polar=dict(
+            radialaxis=dict(
+                visible=True,
+                range=[0, 1]
+            ),
+            angularaxis=dict(
+                direction="clockwise"
+            )
+        ),
+        showlegend=True,
+        title=f'📊 Profil Climatique {year} (Graphique Radar)',
+        height=500
+    )
+    
+    return fig
+
+def create_parallel_coordinates(df, selected_years=None):
+    """Crée un diagramme de coordonnées parallèles."""
+    if df.empty:
+        return go.Figure()
+    
+    if selected_years:
+        plot_df = df[df['year'].isin(selected_years)]
+    else:
+        plot_df = df.sample(min(500, len(df)))
+    
+    required_cols = ['tavg', 'tmax', 'tmin', 'prcp', 'humidity', 'wind_speed', 'year']
+    available_cols = [col for col in required_cols if col in plot_df.columns]
+    
+    if 'year' not in available_cols:
+        available_cols.append('year')
+    
+    fig = px.parallel_coordinates(plot_df,
+                                 dimensions=available_cols[:-1],  # Exclure 'year' des dimensions
+                                 color='year',
+                                 labels={'tavg': 'Temp Moy', 'tmax': 'Temp Max',
+                                        'tmin': 'Temp Min', 'prcp': 'Précip',
+                                        'humidity': 'Humidité', 'wind_speed': 'Vent'},
+                                 color_continuous_scale=px.colors.diverging.Tealrose,
+                                 title='📈 Coordonnées Parallèles des Variables Climatiques',
+                                 height=500)
+    
+    return fig
+
+def create_stream_graph(df):
+    """Crée un graphique stream (courbes empilées)."""
+    if df.empty or 'year' not in df.columns or 'month' not in df.columns:
+        return go.Figure()
+    
+    monthly_data = df.groupby(['year', 'month']).agg({
+        'tavg': 'mean',
+        'prcp': 'sum'
+    }).reset_index()
+    
+    # Pivoter pour le format stream
+    stream_data = monthly_data.pivot(index='month', columns='year', values='tavg')
+    
+    fig = go.Figure()
+    
+    for year in stream_data.columns:
+        fig.add_trace(go.Scatter(
+            x=stream_data.index,
+            y=stream_data[year],
+            mode='lines',
+            stackgroup='one',
+            name=str(year),
+            hoverinfo='x+y+name',
+            line=dict(width=0.5),
+            fill='tonexty'
+        ))
+    
+    fig.update_layout(
+        title='🌊 Évolution des Températures (Graphique Stream)',
+        xaxis_title='Mois',
+        yaxis_title='Température Moyenne (°C)',
+        showlegend=True,
+        height=500,
+        hovermode='x unified'
+    )
+    
+    return fig
 
 def create_datashader_plot(df, x_col='lon', y_col='lat', color_col='tavg', 
                           title='Carte Thermique avec Datashader', width=800, height=600):
@@ -413,35 +603,54 @@ def create_holoviews_datashader(df, x_col='date', y_col='tavg', color_col='prcp'
                                title='Time Series avec Datashader'):
     """Crée une visualisation HoloViews avec Datashader."""
     if not DATA_VIZ_ENABLED:
+        st.warning("HoloViews/Datashader non disponible")
         return None
     
     try:
         # Échantillonner si nécessaire
         if isinstance(df, dd.DataFrame):
-            df_plot = df.sample(frac=0.1).compute() if len(df) > 100000 else df.compute()
+            sample_size = min(50000, get_dataframe_length(df))
+            if sample_size < get_dataframe_length(df):
+                df_plot = df.sample(frac=sample_size/get_dataframe_length(df)).compute()
+            else:
+                df_plot = df.compute()
         else:
-            df_plot = df.sample(min(100000, len(df)))
+            df_plot = df.copy()
+        
+        # S'assurer que les colonnes existent
+        if x_col not in df_plot.columns or y_col not in df_plot.columns:
+            st.error(f"Colonnes {x_col} ou {y_col} non trouvées")
+            return None
+        
+        # Convertir la date si nécessaire
+        if x_col == 'date' and not pd.api.types.is_datetime64_any_dtype(df_plot[x_col]):
+            df_plot[x_col] = pd.to_datetime(df_plot[x_col])
         
         # Créer le scatter plot
         scatter = hv.Scatter(df_plot, x_col, y_col).opts(
             width=800,
             height=400,
             title=title,
-            color=color_col,
-            cmap='viridis',
-            colorbar=True,
-            tools=['hover']
+            color=color_col if color_col in df_plot.columns else hv.Cycle('Category20'),
+            cmap='viridis' if color_col in df_plot.columns else None,
+            colorbar=True if color_col in df_plot.columns else False,
+            tools=['hover', 'pan', 'wheel_zoom', 'reset'],
+            alpha=0.6,
+            size=5
         )
         
-        # Appliquer Datashader
-        shaded = dynspread(datashade(scatter, cmap=viridis))
-        
-        return shaded
+        # Appliquer Datashader pour les grandes données
+        if len(df_plot) > 10000:
+            shaded = dynspread(datashade(scatter, cmap=viridis, width=800, height=400))
+            return shaded
+        else:
+            return scatter
         
     except Exception as e:
-        st.error(f"Erreur HoloViews: {e}")
+        st.error(f"Erreur HoloViews: {str(e)}")
+        import traceback
+        st.code(traceback.format_exc())
         return None
-
 def create_dask_histogram(df, column='tavg', bins=100, title='Distribution avec Dask'):
     """Crée un histogramme avec Dask pour de grandes données."""
     if not DATA_VIZ_ENABLED or not isinstance(df, dd.DataFrame):
@@ -542,65 +751,150 @@ def create_spatial_heatmap(df, title='Carte de Chaleur Spatiale'):
 def create_time_series_aggregation(df, time_col='date', value_col='tavg', 
                                   freq='M', title='Série Temporelle Agrégée'):
     """Crée une série temporelle agrégée avec Dask."""
-    if DATA_VIZ_ENABLED and isinstance(df, dd.DataFrame):
-        try:
+    
+    # Vérifier si les colonnes existent
+    if time_col not in df.columns or value_col not in df.columns:
+        st.warning(f"Colonnes {time_col} ou {value_col} non trouvées dans les données")
+        return None
+    
+    try:
+        if DATA_VIZ_ENABLED and isinstance(df, dd.DataFrame):
+            # Version Dask
             with ProgressBar():
-                # Agrégation temporelle avec Dask
-                df['date'] = dd.to_datetime(df[time_col])
-                df_resampled = df.set_index('date').resample(freq).mean()[value_col].compute()
+                # Sélectionner uniquement les colonnes nécessaires
+                df_temp = df[[time_col, value_col]].copy()
+                
+                # Convertir en pandas pour le traitement
+                df_pd = df_temp.compute()
+                
+                # Convertir la colonne de temps en datetime
+                df_pd['datetime'] = pd.to_datetime(df_pd[time_col], errors='coerce')
+                
+                # Vérifier et convertir la colonne de valeur en numérique
+                if not pd.api.types.is_numeric_dtype(df_pd[value_col]):
+                    df_pd[value_col] = pd.to_numeric(df_pd[value_col], errors='coerce')
+                
+                # Supprimer les valeurs NaN
+                df_pd = df_pd.dropna(subset=['datetime', value_col])
+                
+                if len(df_pd) == 0:
+                    st.warning(f"Aucune donnée numérique valide pour {value_col}")
+                    return None
+                
+                # Définir l'index datetime
+                df_pd.set_index('datetime', inplace=True)
+                
+                # Resample avec gestion des colonnes non-numériques
+                df_resampled = df_pd[value_col].resample(freq).mean()
+                
+                # Créer la figure
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=df_resampled.index,
+                    y=df_resampled.values,
+                    mode='lines+markers',
+                    name=value_col,
+                    line=dict(width=2, color='royalblue'),
+                    marker=dict(size=4)
+                ))
+                
+                fig.update_layout(
+                    title=f"{title} (Dask - {get_dataframe_length(df):,} points)",
+                    xaxis_title='Date',
+                    yaxis_title=value_col,
+                    height=400,
+                    hovermode='x unified'
+                )
+                
+                return fig
+                
+        else:
+            # Version pandas
+            df_pd = df.copy()
             
+            # Convertir la colonne de temps en datetime
+            df_pd['datetime'] = pd.to_datetime(df_pd[time_col], errors='coerce')
+            
+            # Vérifier et convertir la colonne de valeur en numérique
+            if not pd.api.types.is_numeric_dtype(df_pd[value_col]):
+                df_pd[value_col] = pd.to_numeric(df_pd[value_col], errors='coerce')
+            
+            # Supprimer les valeurs NaN
+            df_pd = df_pd.dropna(subset=['datetime', value_col])
+            
+            if len(df_pd) == 0:
+                st.warning(f"Aucune donnée numérique valide pour {value_col}")
+                return None
+            
+            # Définir l'index datetime
+            df_pd.set_index('datetime', inplace=True)
+            
+            # Resample
+            df_resampled = df_pd[value_col].resample(freq).mean()
+            
+            # Créer la figure
             fig = go.Figure()
             fig.add_trace(go.Scatter(
                 x=df_resampled.index,
                 y=df_resampled.values,
-                mode='lines',
+                mode='lines+markers',
                 name=value_col,
-                line=dict(width=2)
+                line=dict(width=2, color='royalblue'),
+                marker=dict(size=4)
             ))
             
             fig.update_layout(
-                title=f"{title} (Dask - {len(df):,} points)",
+                title=f"{title} ({get_dataframe_length(df):,} points)",
                 xaxis_title='Date',
                 yaxis_title=value_col,
-                height=400
+                height=400,
+                hovermode='x unified'
             )
             
             return fig
             
-        except Exception as e:
-            st.error(f"Erreur Dask resample: {e}")
+    except Exception as e:
+        st.error(f"Erreur lors de la création de la série temporelle: {str(e)}")
+        import traceback
+        st.code(traceback.format_exc())
+        return None
+def get_numeric_columns_safe(df):
+    """Retourne les colonnes numériques d'un DataFrame de manière sécurisée."""
+    numeric_cols = []
     
-    # Version pandas
-    if 'date' in df.columns:
-        if isinstance(df, dd.DataFrame):
-            df_pd = df.compute()
-        else:
-            df_pd = df.copy()
-        
-        df_pd['date'] = pd.to_datetime(df_pd[time_col])
-        df_pd.set_index('date', inplace=True)
-        df_resampled = df_pd.resample(freq).mean()[value_col]
-        
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=df_resampled.index,
-            y=df_resampled.values,
-            mode='lines',
-            name=value_col,
-            line=dict(width=2)
-        ))
-        
-        fig.update_layout(
-            title=f"{title} ({len(df):,} points)",
-            xaxis_title='Date',
-            yaxis_title=value_col,
-            height=400
-        )
-        
-        return fig
+    if DATA_VIZ_ENABLED and isinstance(df, dd.DataFrame):
+        # Pour Dask DataFrame
+        with ProgressBar():
+            # Prendre un échantillon pour vérifier les types
+            sample = df.head(1000).compute()
+            
+            for col in df.columns:
+                try:
+                    if col in sample.columns:
+                        if pd.api.types.is_numeric_dtype(sample[col]):
+                            numeric_cols.append(col)
+                        else:
+                            # Essayer de convertir
+                            converted = pd.to_numeric(sample[col], errors='coerce')
+                            if not converted.isna().all():
+                                numeric_cols.append(col)
+                except:
+                    continue
+    else:
+        # Pour pandas DataFrame
+        for col in df.columns:
+            try:
+                if pd.api.types.is_numeric_dtype(df[col]):
+                    numeric_cols.append(col)
+                else:
+                    # Essayer de convertir
+                    converted = pd.to_numeric(df[col], errors='coerce')
+                    if not converted.isna().all():
+                        numeric_cols.append(col)
+            except:
+                continue
     
-    return None
-
+    return numeric_cols   
 # =============================================================
 # 4. FONCTIONS DE VISUALISATION STANDARD
 # =============================================================
@@ -832,14 +1126,14 @@ def main():
                 with col1:
                     start_date = st.date_input(
                         "Date début:",
-                        value=datetime(2020, 1, 1),
+                        value=datetime(2000, 1, 1),
                         min_value=datetime(1900, 1, 1)
                     )
                 
                 with col2:
                     end_date = st.date_input(
                         "Date fin:",
-                        value=datetime(2023, 12, 31),
+                        value=datetime(2024, 12, 31),
                         max_value=datetime.now()
                     )
                 
@@ -854,7 +1148,7 @@ def main():
                     default=["TMAX", "TMIN", "PRCP", "AWND"]
                 )
                 
-                limit = st.slider("Nombre de résultats:", 100, 10000, 1000)
+                limit = st.slider("Nombre de résultats:", 1000, 100000, 10000,)
         
         st.markdown("---")
         
@@ -907,7 +1201,7 @@ def main():
     with st.spinner("⏳ Chargement des données..."):
         if data_source == "API NOAA (Réelles)":
             if NOAA_TOKEN == "YOUR_TOKEN_HERE" or NOAA_TOKEN == "oAlEkhGLpUtHCIGoUOepslRpcWmtLJMM":
-                st.error("❌ Token NOAA non configuré. Créez un fichier `.streamlit/secrets.toml` avec:\n```toml\nNOAA_TOKEN = 'votre_token'\n```")
+                #st.error("❌ Token NOAA non configuré. Créez un fichier `.streamlit/secrets.toml` avec:\n```toml\nNOAA_TOKEN = 'votre_token'\n```")
                 df = generate_enhanced_sample_data(50000)
             else:
                 raw_data = get_climate_data(
@@ -1081,7 +1375,7 @@ def main():
             )
         
         # Visualisation massive si activée
-        if DATA_VIZ_ENABLED and len(df) > 100000:
+        if DATA_VIZ_ENABLED and len(df) > 10000000:
             st.markdown("---")
             st.markdown("#### 🚀 Visualisation Massive")
             
@@ -1216,27 +1510,71 @@ def main():
                 st.dataframe(stats, use_container_width=True)
         
         elif viz_type == "Holoviews + Datashader":
-            st.markdown("#### 🎨 HoloViews avec Datashader")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                x_var = st.selectbox("Axe X:", ['date', 'tavg', 'prcp', 'humidity'])
-            with col2:
-                y_var = st.selectbox("Axe Y:", ['tavg', 'prcp', 'humidity', 'wind_speed'])
-            
-            plot = create_holoviews_datashader(df, x_col=x_var, y_col=y_var,
-                                             title=f"{y_var} vs {x_var}")
-            if plot:
-                # Convertir HoloViews en HTML pour Streamlit
-                hv.save(plot, 'temp_plot.html')
-                with open('temp_plot.html', 'r') as f:
-                    html = f.read()
+                st.markdown("#### 🎨 HoloViews avec Datashader")
                 
-                # Afficher dans Streamlit
-                components.html(html, height=500)
-            else:
-                st.warning("Impossible de créer la visualisation HoloViews")
+                # Afficher les colonnes disponibles
+                available_cols = list(df.columns)
+                if isinstance(df, dd.DataFrame):
+                    with ProgressBar():
+                        df_sample = df.head(100).compute()
+                else:
+                    df_sample = df.head(100)
+                
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    x_var = st.selectbox("Axe X:", available_cols, index=available_cols.index('date') if 'date' in available_cols else 0)
+                with col2:
+                    y_var = st.selectbox("Axe Y:", available_cols, index=available_cols.index('tavg') if 'tavg' in available_cols else 1)
+                with col3:
+                    color_options = [None] + available_cols
+                    color_var = st.selectbox("Couleur:", color_options, index=0)
+                
+                # Options supplémentaires
+                with st.expander("Options avancées"):
+                    plot_type = st.selectbox("Type de plot:", ["Scatter", "Line", "Points"])
+                    cmap_type = st.selectbox("Colormap:", ["viridis", "plasma", "inferno", "magma", "coolwarm"])
+                    point_size = st.slider("Taille des points:", 1, 20, 5)
+                    alpha = st.slider("Transparence:", 0.1, 1.0, 0.6)
+                
+                if st.button("🔄 Générer la visualisation"):
+                    with st.spinner("Création de la visualisation HoloViews..."):
+                        # CORRECTION ICI : utiliser y_var au lieu de y_col
+                        plot = create_holoviews_datashader(
+                            df, 
+                            x_col=x_var, 
+                            y_col=y_var,  # Changé de y_col à y_var
+                            color_col=color_var,
+                            title=f"{y_var} vs {x_var}"
+                        )
+                        
+                        if plot:
+                            # Afficher le plot
+                            display_holoviews_in_streamlit(plot, title="Visualisation HoloViews")
+                            
+                            # Afficher des informations
+                            st.info(f"**Points de données:** {get_dataframe_length(df):,}")
+                            if color_var:
+                                st.info(f"**Variable de couleur:** {color_var}")
+                            
+                            # Aperçu des données
+                            with st.expander("📊 Aperçu des données"):
+                                st.dataframe(df_sample, use_container_width=True)
+                        else:
+                            st.error("Impossible de créer la visualisation HoloViews")
+                            
+                            # Alternative: créer un simple scatter avec Plotly
+                            st.info("Tentative avec Plotly comme alternative...")
+                            sample_size = min(10000, get_dataframe_length(df))
+                            if isinstance(df, dd.DataFrame):
+                                df_viz = df.sample(frac=sample_size/get_dataframe_length(df)).compute()
+                            else:
+                                df_viz = df.sample(min(sample_size, len(df)))
+                            
+                            fig = px.scatter(df_viz, x=x_var, y=y_var, color=color_var if color_var else None,
+                                            title=f"{y_var} vs {x_var} (Alternative Plotly)",
+                                            opacity=alpha)
+                            st.plotly_chart(fig, use_container_width=True)
         
         elif viz_type == "Comparaison de Performances":
             st.markdown("#### ⚡ Comparaison de Performances")
@@ -1346,50 +1684,453 @@ def main():
             st.warning("Les données géographiques ne sont pas disponibles")
     
     elif page == "🔬 Avancé":
-        st.title("🔬 Analyses Avancées")
+        st.title("🔬 Analyses Avancées et Export")
         
-        # Analyse de tendance
-        st.markdown("#### Analyse de Tendance")
+        tab1, tab2, tab3 = st.tabs(["📊 Créateur de Visualisations", "📈 Analyses Temporelles", "💾 Export des Données"])
         
-        if 'tavg' in df.columns and 'year' in df.columns:
-            if isinstance(df, dd.DataFrame):
-                with ProgressBar():
-                    yearly_avg = df.groupby('year')['tavg'].mean().compute().reset_index()
-            else:
-                yearly_avg = df.groupby('year')['tavg'].mean().reset_index()
+        with tab1:
+            st.markdown("#### 🎨 Créateur de Visualisations Personnalisées")
             
-            if len(yearly_avg) > 1:
-                coeffs = np.polyfit(yearly_avg['year'], yearly_avg['tavg'], 1)
-                trend_line = np.poly1d(coeffs)
-                
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(
-                    x=yearly_avg['year'],
-                    y=yearly_avg['tavg'],
-                    mode='markers',
-                    name='Données',
-                    marker=dict(size=10)
-                ))
-                fig.add_trace(go.Scatter(
-                    x=yearly_avg['year'],
-                    y=trend_line(yearly_avg['year']),
-                    mode='lines',
-                    name=f'Tendance ({coeffs[0]*10:.3f}°C/décennie)',
-                    line=dict(color='red', width=3)
-                ))
-                
-                fig.update_layout(
-                    title='📈 Analyse de Tendance Linéaire',
-                    xaxis_title='Année',
-                    yaxis_title='Température Moyenne (°C)',
-                    height=400
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                chart_type = st.selectbox(
+                    "Type de graphique:",
+                    ["Ligne Interactive", "Barre Empilée", "Scatter Animé", "Box Plot", "Violon", "Densité"]
                 )
+            
+            with col2:
+                numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+                if numeric_cols:
+                    x_var = st.selectbox("Variable X:", numeric_cols)
+                else:
+                    x_var = None
+            
+            with col3:
+                if numeric_cols and len(numeric_cols) > 1:
+                    y_var = st.selectbox("Variable Y:", numeric_cols, 
+                                       index=1 if len(numeric_cols) > 1 else 0)
+                else:
+                    y_var = None
+            
+            categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
+            if categorical_cols:
+                color_options = [None] + categorical_cols
+                color_var = st.selectbox(
+                    "Couleur par:",
+                    color_options
+                )
+            else:
+                color_var = None
+            
+            if 'year' in df.columns:
+                animation_options = [None, 'year', 'month']
+                if 'continent' in df.columns:
+                    animation_options.append('continent')
+                animation_var = st.selectbox(
+                    "Animation par:",
+                    animation_options
+                )
+            else:
+                animation_var = None
+            
+            # Options avancées
+            with st.expander("⚙️ Options avancées"):
+                trendline = st.checkbox("Ajouter une ligne de tendance")
+                smoothing = st.checkbox("Lissage des courbes")
+                log_scale = st.selectbox("Échelle logarithmique:", [None, "X", "Y", "Les deux"])
+            
+            if st.button("🔄 Générer la visualisation") and x_var and y_var:
+                # Créer le graphique personnalisé
+                if chart_type == "Ligne Interactive":
+                    fig = px.line(df, x=x_var, y=y_var, color=color_var, 
+                                 animation_frame=animation_var,
+                                 title=f"{y_var} vs {x_var}")
+                    if smoothing:
+                        fig.update_traces(line_shape="spline")
+                
+                elif chart_type == "Barre Empilée":
+                    fig = px.bar(df, x=x_var, y=y_var, color=color_var,
+                                title=f"{y_var} par {x_var}")
+                
+                elif chart_type == "Scatter Animé":
+                    fig = px.scatter(df, x=x_var, y=y_var, color=color_var,
+                                    animation_frame=animation_var,
+                                    size='prcp' if 'prcp' in df.columns else None,
+                                    title=f"Scatter Plot Animé")
+                
+                elif chart_type == "Box Plot":
+                    fig = px.box(df, x=x_var, y=y_var, color=color_var,
+                                title=f"Distribution de {y_var}")
+                
+                elif chart_type == "Violon":
+                    fig = px.violin(df, x=x_var, y=y_var, color=color_var,
+                                   title=f"Distribution Densité de {y_var}")
+                
+                else:  # Densité
+                    fig = px.density_heatmap(df, x=x_var, y=y_var,
+                                            title=f"Densité {x_var} vs {y_var}")
+                
+                # Appliquer les options avancées
+                if trendline and chart_type in ["Ligne Interactive", "Scatter Animé"]:
+                    fig.update_traces(mode='lines+markers')
+                
+                if log_scale == "X" or log_scale == "Les deux":
+                    fig.update_xaxes(type="log")
+                if log_scale == "Y" or log_scale == "Les deux":
+                    fig.update_yaxes(type="log")
                 
                 st.plotly_chart(fig, use_container_width=True)
+        
+        with tab2:
+            st.markdown("#### 📈 Analyses Temporelles Avancées")
+            
+            # Analyse de tendance
+            st.markdown("##### Analyse de Tendance")
+            
+            if 'tavg' in df.columns and 'year' in df.columns:
+                # Regression linéaire
+                yearly_avg = df.groupby('year')['tavg'].mean().reset_index()
+                if len(yearly_avg) > 1:
+                    coeffs = np.polyfit(yearly_avg['year'], yearly_avg['tavg'], 1)
+                    trend_line = np.poly1d(coeffs)
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.metric("Pente de tendance", f"{coeffs[0]*10:.3f}°C/décennie")
+                        st.metric("Intercept", f"{coeffs[1]:.2f}°C")
+                    
+                    with col2:
+                        correlation = yearly_avg['year'].corr(yearly_avg['tavg'])
+                        st.metric("Corrélation", f"{correlation:.3f}")
+                        st.metric("R²", f"{correlation**2:.3f}")
+                    
+                    # Graphique de tendance
+                    fig_trend = go.Figure()
+                    fig_trend.add_trace(go.Scatter(
+                        x=yearly_avg['year'],
+                        y=yearly_avg['tavg'],
+                        mode='markers',
+                        name='Données',
+                        marker=dict(size=10)
+                    ))
+                    fig_trend.add_trace(go.Scatter(
+                        x=yearly_avg['year'],
+                        y=trend_line(yearly_avg['year']),
+                        mode='lines',
+                        name=f'Tendance ({coeffs[0]*10:.2f}°C/décennie)',
+                        line=dict(color='red', width=3)
+                    ))
+                    
+                    fig_trend.update_layout(
+                        title='📈 Analyse de Tendance Linéaire',
+                        xaxis_title='Année',
+                        yaxis_title='Température Moyenne (°C)',
+                        height=400
+                    )
+                    
+                    st.plotly_chart(fig_trend, use_container_width=True)
+            
+            # Analyse saisonnière
+            st.markdown("##### Analyse Saisonnière")
+            
+            if 'month' in df.columns and 'tavg' in df.columns:
+                seasonal_avg = df.groupby('month')['tavg'].mean().reset_index()
+                
+                fig_seasonal = px.line_polar(seasonal_avg, r='tavg', theta='month',
+                                            line_close=True,
+                                            title='🔄 Variation Saisonnière des Températures')
+                fig_seasonal.update_traces(fill='toself')
+                
+                st.plotly_chart(fig_seasonal, use_container_width=True)
+        
+        with tab3:
+            st.markdown("#### 💾 Export des Données et Visualisations")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("##### Export des Données")
+                
+                # Prévisualisation des données
+                st.markdown("**Aperçu des données :**")
+                st.dataframe(df.head(10), use_container_width=True)
+                
+                # Options d'export
+                export_format = st.selectbox(
+                    "Format d'export:",
+                    ["CSV", "JSON", "Excel", "Parquet"]
+                )
+                
+                if export_format == "CSV":
+                    csv = df.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        "📥 Télécharger CSV",
+                        csv,
+                        "climate_data_advanced.csv",
+                        "text/csv",
+                        key='download-csv'
+                    )
+                
+                elif export_format == "JSON":
+                    json_str = df.to_json(orient='records', indent=2)
+                    st.download_button(
+                        "📥 Télécharger JSON",
+                        json_str,
+                        "climate_data_advanced.json",
+                        "application/json",
+                        key='download-json'
+                    )
+                
+                elif export_format == "Excel":
+                    # Pour Excel, on utilise un buffer
+                    output = io.BytesIO()
+                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                        df.to_excel(writer, index=False, sheet_name='ClimateData')
+                        # Ajouter un onglet avec les statistiques
+                        df.describe().to_excel(writer, sheet_name='Statistics')
+                    
+                    st.download_button(
+                        "📥 Télécharger Excel",
+                        output.getvalue(),
+                        "climate_data_advanced.xlsx",
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key='download-excel'
+                    )
+                
+                else:  # Parquet
+                    # Pour Parquet, on utilise un buffer temporaire
+                    import tempfile
+                    try:
+                        import pyarrow as pa
+                        import pyarrow.parquet as pq
+                        
+                        with tempfile.NamedTemporaryFile(delete=False, suffix='.parquet') as tmp:
+                            table = pa.Table.from_pandas(df)
+                            pq.write_table(table, tmp.name)
+                            
+                            with open(tmp.name, 'rb') as f:
+                                parquet_data = f.read()
+                            
+                            st.download_button(
+                                "📥 Télécharger Parquet",
+                                parquet_data,
+                                "climate_data_advanced.parquet",
+                                "application/octet-stream",
+                                key='download-parquet'
+                            )
+                    except ImportError:
+                        st.error("La bibliothèque pyarrow est requise pour l'export Parquet. Installez-la avec `pip install pyarrow`")
+            
+            with col2:
+                st.markdown("##### Export des Visualisations")
+                
+                # Options pour exporter les graphiques
+                chart_to_export = st.selectbox(
+                    "Graphique à exporter:",
+                    ["Évolution des Températures", "Carte Animée", "Graphique 3D", 
+                     "Radar Chart", "Matrice de Corrélation"]
+                )
+                
+                format_img = st.selectbox(
+                    "Format d'image:",
+                    ["PNG", "JPEG", "SVG", "PDF"]
+                )
+                
+                if st.button("🖼️ Générer l'image"):
+                    # Créer le graphique sélectionné
+                    if chart_to_export == "Évolution des Températures":
+                        fig = create_temperature_evolution(df)
+                    elif chart_to_export == "Carte Animée":
+                        fig = create_animated_temperature_map(df)
+                    elif chart_to_export == "Graphique 3D":
+                        fig = create_3d_scatter_plot(df)
+                    elif chart_to_export == "Radar Chart":
+                        fig = create_radar_chart(df, df['year'].max() if 'year' in df.columns else None)
+                    else:
+                        fig = create_correlation_matrix_interactive(df)
+                    
+                    # Afficher le graphique
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    # Bouton de téléchargement (note: Plotly ne permet pas le téléchargement direct en SVG/PDF)
+                    st.info(f"Pour sauvegarder en {format_img}, utilisez l'icône de capture dans la barre d'outils du graphique.")
+                
+                st.markdown("---")
+                st.markdown("##### Rapport Automatique")
+                
+                if st.button("📄 Générer un rapport PDF"):
+                    with st.spinner("Génération du rapport..."):
+                        # Ici vous pourriez intégrer une librairie comme reportlab ou weasyprint
+                        # Pour l'exemple, on montre juste un message
+                        st.success("Fonctionnalité de rapport PDF à implémenter avec reportlab ou weasyprint")
+                        st.markdown("""
+                        **Contenu du rapport :**
+                        1. Résumé exécutif
+                        2. KPIs principaux
+                        3. Visualisations clés
+                        4. Analyses statistiques
+                        5. Recommandations
+                        """)
+    
     
     elif page == "🎯 Radar & Parallèles":
         st.title("🎯 Visualisations Avancées")
-        st.info("Cette page nécessite des données structurées")
+        
+        tab1, tab2, tab3 = st.tabs(["📊 Graphiques Radar", "📈 Coordonnées Parallèles", "🌊 Graphiques Stream"])
+        
+        with tab1:
+            col1, col2 = st.columns([2, 1])
+            
+            with col1:
+                st.markdown("#### Graphique Radar des Variables Climatiques")
+                if 'year' in df.columns:
+                    years = sorted(df['year'].unique())
+                    if len(years) > 0:
+                        selected_year = st.slider(
+                            "Sélectionner l'année:",
+                            min_value=int(min(years)),
+                            max_value=int(max(years)),
+                            value=int(max(years))
+                        )
+                        
+                        radar_fig = create_radar_chart(df, selected_year)
+                        st.plotly_chart(radar_fig, use_container_width=True)
+                else:
+                    st.warning("La colonne 'year' n'est pas disponible dans les données.")
+            
+            with col2:
+                st.markdown("#### 📋 Légende Radar")
+                st.markdown("""
+                **Axe radial** : Valeurs normalisées (0-1)
+                
+                **Variables :**
+                - **Temp Moy** : Température moyenne
+                - **Temp Max** : Température maximale
+                - **Temp Min** : Température minimale
+                - **Précip** : Précipitations (échelle réduite)
+                - **Humidité** : Humidité relative
+                - **Vent** : Vitesse du vent
+                
+                **Interprétation :**
+                - Plus l'aire est grande, plus les valeurs sont élevées
+                - Comparaison avec la moyenne historique (gris)
+                """)
+                
+                # Comparaison entre années
+                st.markdown("#### Comparer deux années")
+                if 'year' in df.columns:
+                    available_years = sorted(df['year'].unique())
+                    if len(available_years) >= 2:
+                        # Calculer les indices pour les deux dernières années
+                        year1_idx = max(0, len(available_years) - 2)
+                        year2_idx = max(0, len(available_years) - 1)
+                        
+                        year1 = st.selectbox("Année 1", available_years, index=year1_idx)
+                        year2 = st.selectbox("Année 2", available_years, index=year2_idx)
+                        
+                        if year1 != year2:
+                            # Créer un radar comparatif
+                            fig_compare = go.Figure()
+                            
+                            for year, color in zip([year1, year2], ['blue', 'red']):
+                                year_data = df[df['year'] == year]
+                                if len(year_data) > 0:
+                                    required_cols = ['tavg', 'tmax', 'tmin', 'prcp', 'humidity', 'wind_speed']
+                                    # Vérifier les colonnes manquantes
+                                    for col in required_cols:
+                                        if col not in year_data.columns:
+                                            if col == 'prcp':
+                                                year_data[col] = 0
+                                            elif col in ['tavg', 'tmax', 'tmin']:
+                                                year_data[col] = 20
+                                            elif col == 'humidity':
+                                                year_data[col] = 50
+                                            elif col == 'wind_speed':
+                                                year_data[col] = 5
+                                    
+                                    avg_data = year_data[required_cols].mean()
+                                    max_vals = df[required_cols].max()
+                                    min_vals = df[required_cols].min()
+                                    normalized_data = (avg_data - min_vals) / (max_vals - min_vals)
+                                    
+                                    fig_compare.add_trace(go.Scatterpolar(
+                                        r=[
+                                            normalized_data['tavg'],
+                                            normalized_data['tmax'],
+                                            normalized_data['tmin'],
+                                            normalized_data['prcp'] / 100,
+                                            normalized_data['humidity'] / 100,
+                                            normalized_data['wind_speed'] / 20
+                                        ],
+                                        theta=['Temp Moy', 'Temp Max', 'Temp Min', 'Précip', 'Humidité', 'Vent'],
+                                        fill='toself',
+                                        name=f'Année {year}',
+                                        line_color=color,
+                                        opacity=0.5
+                                    ))
+                            
+                            fig_compare.update_layout(
+                                polar=dict(radialaxis=dict(visible=True, range=[0, 1])),
+                                title=f'📊 Comparaison {year1} vs {year2}',
+                                height=400
+                            )
+                            
+                            st.plotly_chart(fig_compare, use_container_width=True)
+        
+        with tab2:
+            st.markdown("#### Diagramme de Coordonnées Parallèles")
+            
+            if 'year' in df.columns:
+                available_years = sorted(df['year'].unique())
+                if available_years:
+                    selected_years = st.multiselect(
+                        "Sélectionner les années à comparer:",
+                        available_years,
+                        default=available_years[-min(3, len(available_years)):]  # Maximum 3 dernières années
+                    )
+                    
+                    if selected_years:
+                        parallel_fig = create_parallel_coordinates(df, selected_years)
+                        st.plotly_chart(parallel_fig, use_container_width=True)
+                        
+                        st.markdown("**Comment interpréter :**")
+                        st.markdown("""
+                        - Chaque ligne représente une observation
+                        - Les axes verticaux représentent les différentes variables
+                        - La couleur montre la valeur de l'année
+                        - Les lignes parallèles indiquent des corrélations positives
+                        - Les lignes qui se croisent indiquent des corrélations négatives
+                        """)
+                    else:
+                        st.warning("Veuillez sélectionner au moins une année.")
+                else:
+                    st.warning("Aucune année disponible dans les données.")
+            else:
+                st.warning("La colonne 'year' n'est pas disponible dans les données.")
+        
+        with tab3:
+            st.markdown("#### Graphique Stream (Courbes Empilées)")
+            
+            stream_fig = create_stream_graph(df)
+            st.plotly_chart(stream_fig, use_container_width=True)
+            
+            st.markdown("**Explication :**")
+            st.markdown("""
+            Le graphique stream montre l'évolution des températures moyennes par mois,
+            empilées par année. Cela permet de voir :
+            
+            1. **Tendances saisonnières** : Pattern répétitif chaque année
+            2. **Évolution temporelle** : Comment chaque année se compare
+            3. **Variabilité** : Largeur de la bande à chaque point
+            
+            **Utilisations :**
+            - Identifier des années exceptionnelles
+            - Voir les changements saisonniers
+            - Comparer visuellement plusieurs années
+            """)
+    
     
     # Footer
     st.markdown("---")
