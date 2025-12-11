@@ -56,7 +56,6 @@ def get_climate_data(dataset_id="GHCND", start_date="2020-01-01", end_date="2023
         "startdate": start_date,
         "enddate": end_date,
         "limit": limit,
-        "units": "metric"
     }
     
     if location_id:
@@ -117,7 +116,9 @@ def process_climate_data(df):
         'AWND': 'wind_avg',
         'WSF2': 'wind_fastest'
     }
-    df_pivot = df_pivot.rename(columns=column_mapping)
+    # Renommer uniquement les colonnes existantes
+    existing_columns = {k: v for k, v in column_mapping.items() if k in df_pivot.columns}
+    df_pivot = df_pivot.rename(columns=existing_columns)
     
     # Calculer tavg si manquant
     if 'tavg' not in df_pivot.columns and 'tmax' in df_pivot.columns and 'tmin' in df_pivot.columns:
@@ -148,8 +149,15 @@ def generate_enhanced_sample_data():
             base_temp = 15 + warming_trend + 10 * np.sin(2 * np.pi * 183 / 365)  # Milieu d'année
             
             for month in range(1, 13):
-                for day in range(1, 29):
-                    date = datetime(year, month, day)
+                # Générer entre 28 et 31 jours selon le mois
+                days_in_month = 30 if month in [4, 6, 9, 11] else 31 if month != 2 else 28
+                
+                for day in range(1, days_in_month + 1):
+                    try:
+                        date = datetime(year, month, day)
+                    except ValueError:
+                        continue
+                    
                     day_of_year = date.timetuple().tm_yday
                     
                     seasonal_variation = 10 * np.sin(2 * np.pi * day_of_year / 365)
@@ -177,24 +185,52 @@ def generate_enhanced_sample_data():
 
 def compute_kpis(df):
     """Calcule les indicateurs clés avancés."""
-    kpis = {
-        "temp_moy": df["tavg"].mean() if "tavg" in df.columns else 0,
-        "temp_trend": np.polyfit(df['year'].unique(), df.groupby('year')['tavg'].mean().values, 1)[0] * 100 if "tavg" in df.columns else 0,
-        "pluie_totale": df["prcp"].sum() if "prcp" in df.columns else 0,
-        "nb_annees": df["year"].nunique(),
-        "temp_max": df["tmax"].max() if "tmax" in df.columns else 0,
-        "temp_min": df["tmin"].min() if "tmin" in df.columns else 0,
-        "humidite_moy": df["humidity"].mean() if "humidity" in df.columns else 65,
-        "variability": df.groupby('year')['tavg'].std().mean() if "tavg" in df.columns else 0,
-        "heatwaves": (df['tmax'] > 30).sum() / len(df) * 100 if "tmax" in df.columns and len(df) > 0 else 0,
-        "drought_risk": (df['prcp'] < 5).sum() / len(df) * 100 if "prcp" in df.columns and len(df) > 0 else 0,
-        "solar_avg": df["solar_radiation"].mean() if "solar_radiation" in df.columns else 0,
-        "wind_avg": df["wind_speed"].mean() if "wind_speed" in df.columns else 0
-    }
+    kpis = {}
     
-    # Calculer des métriques supplémentaires
-    if "continent" in df.columns:
-        kpis["continents"] = df["continent"].nunique()
+    if not df.empty:
+        kpis["temp_moy"] = df["tavg"].mean() if "tavg" in df.columns else 0
+        kpis["pluie_totale"] = df["prcp"].sum() if "prcp" in df.columns else 0
+        kpis["nb_annees"] = df["year"].nunique()
+        kpis["temp_max"] = df["tmax"].max() if "tmax" in df.columns else 0
+        kpis["temp_min"] = df["tmin"].min() if "tmin" in df.columns else 0
+        kpis["humidite_moy"] = df["humidity"].mean() if "humidity" in df.columns else 65
+        kpis["solar_avg"] = df["solar_radiation"].mean() if "solar_radiation" in df.columns else 0
+        kpis["wind_avg"] = df["wind_speed"].mean() if "wind_speed" in df.columns else 0
+        
+        # Calcul de la tendance de température
+        if "tavg" in df.columns and df['year'].nunique() > 1:
+            yearly_avg = df.groupby('year')['tavg'].mean().reset_index()
+            if len(yearly_avg) > 1:
+                coeffs = np.polyfit(yearly_avg['year'], yearly_avg['tavg'], 1)
+                kpis["temp_trend"] = coeffs[0] * 100  # °C par siècle
+            else:
+                kpis["temp_trend"] = 0
+        else:
+            kpis["temp_trend"] = 0
+            
+        # Calcul de la variabilité
+        if "tavg" in df.columns and df['year'].nunique() > 1:
+            kpis["variability"] = df.groupby('year')['tavg'].std().mean()
+        else:
+            kpis["variability"] = 0
+            
+        # Calcul des canicules
+        if "tmax" in df.columns and len(df) > 0:
+            kpis["heatwaves"] = (df['tmax'] > 30).sum() / len(df) * 100
+        else:
+            kpis["heatwaves"] = 0
+            
+        # Calcul du risque de sécheresse
+        if "prcp" in df.columns and len(df) > 0:
+            kpis["drought_risk"] = (df['prcp'] < 5).sum() / len(df) * 100
+        else:
+            kpis["drought_risk"] = 0
+            
+        # Nombre de continents
+        if "continent" in df.columns:
+            kpis["continents"] = df["continent"].nunique()
+        else:
+            kpis["continents"] = 1
     
     return kpis
 
@@ -204,6 +240,9 @@ def compute_kpis(df):
 
 def create_temperature_evolution(df):
     """Crée le graphique d'évolution des températures avec animation."""
+    if df.empty or 'year' not in df.columns:
+        return go.Figure()
+    
     yearly_data = df.groupby('year').agg({
         'tavg': 'mean',
         'tmax': 'max',
@@ -244,35 +283,16 @@ def create_temperature_evolution(df):
         xaxis_title='Année',
         yaxis_title='Température (°C)',
         hovermode='x unified',
-        height=500,
-        updatemenus=[{
-            'buttons': [
-                {
-                    'args': [None, {'frame': {'duration': 500, 'redraw': True}, 'fromcurrent': True}],
-                    'label': '▶️ Play',
-                    'method': 'animate'
-                },
-                {
-                    'args': [[None], {'frame': {'duration': 0, 'redraw': True}, 'mode': 'immediate', 'transition': {'duration': 0}}],
-                    'label': '⏸️ Pause',
-                    'method': 'animate'
-                }
-            ],
-            'direction': 'left',
-            'pad': {'r': 10, 't': 10},
-            'showactive': False,
-            'type': 'buttons',
-            'x': 0.1,
-            'xanchor': 'right',
-            'y': 0,
-            'yanchor': 'top'
-        }]
+        height=500
     )
     
     return fig
 
 def create_precipitation_chart(df):
     """Crée le graphique des précipitations avec interactivité."""
+    if df.empty or 'prcp' not in df.columns:
+        return go.Figure()
+    
     monthly_prcp = df.groupby(['year', 'month'])['prcp'].sum().reset_index()
     
     fig = px.bar(
@@ -284,38 +304,16 @@ def create_precipitation_chart(df):
         labels={'month': 'Mois', 'prcp': 'Précipitations (mm)', 'year': 'Année'},
         height=500,
         animation_frame='year',
-        range_y=[0, monthly_prcp['prcp'].max() * 1.1]
-    )
-    
-    fig.update_layout(
-        updatemenus=[{
-            "buttons": [
-                {
-                    "args": [None, {"frame": {"duration": 1000, "redraw": True}, "fromcurrent": True}],
-                    "label": "▶️ Play",
-                    "method": "animate"
-                },
-                {
-                    "args": [[None], {"frame": {"duration": 0, "redraw": True}, "mode": "immediate", "transition": {"duration": 0}}],
-                    "label": "⏸️ Pause",
-                    "method": "animate"
-                }
-            ],
-            "direction": "left",
-            "pad": {"r": 10, "t": 10},
-            "showactive": False,
-            "type": "buttons",
-            "x": 0.1,
-            "xanchor": "right",
-            "y": 0,
-            "yanchor": "top"
-        }]
+        range_y=[0, monthly_prcp['prcp'].max() * 1.1] if not monthly_prcp.empty else [0, 100]
     )
     
     return fig
 
 def create_animated_temperature_map(df):
     """Crée une carte animée des températures."""
+    if df.empty or 'year' not in df.columns:
+        return go.Figure()
+    
     yearly_avg = df.groupby(['year', 'continent']).agg({
         'tavg': 'mean',
         'tmax': 'max',
@@ -340,36 +338,13 @@ def create_animated_temperature_map(df):
     
     fig.update_layout(geo=dict(showland=True, landcolor="lightgray"))
     
-    # Ajouter des boutons de contrôle d'animation
-    fig.update_layout(
-        updatemenus=[{
-            "buttons": [
-                {
-                    "args": [None, {"frame": {"duration": 1000, "redraw": True}, "fromcurrent": True}],
-                    "label": "▶️ Play",
-                    "method": "animate"
-                },
-                {
-                    "args": [[None], {"frame": {"duration": 0, "redraw": True}, "mode": "immediate", "transition": {"duration": 0}}],
-                    "label": "⏸️ Pause",
-                    "method": "animate"
-                }
-            ],
-            "direction": "left",
-            "pad": {"r": 10, "t": 10},
-            "showactive": False,
-            "type": "buttons",
-            "x": 0.1,
-            "xanchor": "right",
-            "y": 0,
-            "yanchor": "top"
-        }]
-    )
-    
     return fig
 
 def create_3d_scatter_plot(df):
     """Crée un graphique 3D interactif."""
+    if df.empty:
+        return go.Figure()
+    
     sample_df = df.sample(min(1000, len(df)))
     
     fig = px.scatter_3d(sample_df,
@@ -380,8 +355,7 @@ def create_3d_scatter_plot(df):
                        size='solar_radiation' if 'solar_radiation' in df.columns else 'wind_speed',
                        hover_name='station',
                        title='🌐 Visualisation 3D Interactive des Variables Climatiques',
-                       height=600,
-                       animation_frame='year' if 'year' in df.columns else None)
+                       height=600)
     
     fig.update_layout(scene=dict(
         xaxis_title='Température Moyenne (°C)',
@@ -393,6 +367,9 @@ def create_3d_scatter_plot(df):
 
 def create_interactive_heatmap(df):
     """Crée une heatmap interactive avec zoom."""
+    if df.empty or 'tavg' not in df.columns:
+        return go.Figure()
+    
     pivot_data = df.pivot_table(index='month', columns='year', values='tavg', aggfunc='mean')
     
     fig = go.Figure(data=go.Heatmap(
@@ -419,6 +396,9 @@ def create_interactive_heatmap(df):
 
 def create_radar_chart(df, year=None):
     """Crée un graphique radar pour une année spécifique."""
+    if df.empty or 'year' not in df.columns:
+        return go.Figure()
+    
     if year is None:
         year = df['year'].max()
     
@@ -427,11 +407,27 @@ def create_radar_chart(df, year=None):
     if len(year_data) == 0:
         return go.Figure()
     
-    avg_data = year_data[['tavg', 'tmax', 'tmin', 'prcp', 'humidity', 'wind_speed']].mean()
+    # Vérifier que toutes les colonnes nécessaires existent
+    required_cols = ['tavg', 'tmax', 'tmin', 'prcp', 'humidity', 'wind_speed']
+    missing_cols = [col for col in required_cols if col not in year_data.columns]
+    
+    if missing_cols:
+        # Créer des colonnes manquantes avec des valeurs par défaut
+        for col in missing_cols:
+            if col == 'prcp':
+                year_data[col] = 0
+            elif col in ['tavg', 'tmax', 'tmin']:
+                year_data[col] = 20
+            elif col == 'humidity':
+                year_data[col] = 50
+            elif col == 'wind_speed':
+                year_data[col] = 5
+    
+    avg_data = year_data[required_cols].mean()
     
     # Normaliser les données pour le radar
-    max_vals = df[['tavg', 'tmax', 'tmin', 'prcp', 'humidity', 'wind_speed']].max()
-    min_vals = df[['tavg', 'tmax', 'tmin', 'prcp', 'humidity', 'wind_speed']].min()
+    max_vals = df[required_cols].max()
+    min_vals = df[required_cols].min()
     
     normalized_data = (avg_data - min_vals) / (max_vals - min_vals)
     
@@ -452,7 +448,7 @@ def create_radar_chart(df, year=None):
     ))
     
     # Ajouter des données de référence (moyenne historique)
-    ref_data = df[['tavg', 'tmax', 'tmin', 'prcp', 'humidity', 'wind_speed']].mean()
+    ref_data = df[required_cols].mean()
     normalized_ref = (ref_data - min_vals) / (max_vals - min_vals)
     
     fig.add_trace(go.Scatterpolar(
@@ -490,13 +486,22 @@ def create_radar_chart(df, year=None):
 
 def create_parallel_coordinates(df, selected_years=None):
     """Crée un diagramme de coordonnées parallèles."""
+    if df.empty:
+        return go.Figure()
+    
     if selected_years:
         plot_df = df[df['year'].isin(selected_years)]
     else:
         plot_df = df.sample(min(500, len(df)))
     
+    required_cols = ['tavg', 'tmax', 'tmin', 'prcp', 'humidity', 'wind_speed', 'year']
+    available_cols = [col for col in required_cols if col in plot_df.columns]
+    
+    if 'year' not in available_cols:
+        available_cols.append('year')
+    
     fig = px.parallel_coordinates(plot_df,
-                                 dimensions=['tavg', 'tmax', 'tmin', 'prcp', 'humidity', 'wind_speed'],
+                                 dimensions=available_cols[:-1],  # Exclure 'year' des dimensions
                                  color='year',
                                  labels={'tavg': 'Temp Moy', 'tmax': 'Temp Max',
                                         'tmin': 'Temp Min', 'prcp': 'Précip',
@@ -509,6 +514,9 @@ def create_parallel_coordinates(df, selected_years=None):
 
 def create_stream_graph(df):
     """Crée un graphique stream (courbes empilées)."""
+    if df.empty or 'year' not in df.columns or 'month' not in df.columns:
+        return go.Figure()
+    
     monthly_data = df.groupby(['year', 'month']).agg({
         'tavg': 'mean',
         'prcp': 'sum'
@@ -546,6 +554,9 @@ def create_correlation_matrix_interactive(df):
     """Crée une matrice de corrélation interactive."""
     numeric_cols = ['tavg', 'tmax', 'tmin', 'prcp', 'humidity', 'wind_speed', 'solar_radiation']
     available_cols = [col for col in numeric_cols if col in df.columns]
+    
+    if len(available_cols) < 2:
+        return go.Figure()
     
     corr = df[available_cols].corr()
     
@@ -666,8 +677,8 @@ def main():
     # Chargement des données
     with st.spinner("⏳ Chargement des données enrichies..."):
         if data_source == "API NOAA (Réelles)":
-            if NOAA_TOKEN == "YOUR_TOKEN_HERE":
-                st.error("❌ Token NOAA non configuré. Créez un fichier `.streamlit/secrets.toml` avec:\n```toml\nNOAA_TOKEN = 'votre_token'\n```")
+            if NOAA_TOKEN == "oAlEkhGLpUtHCIGoUOepslRpcWmtLJMM" or NOAA_TOKEN == "oAlEkhGLpUtHCIGoUOepslRpcWmtLJMM":
+                
                 df = generate_enhanced_sample_data()
             else:
                 raw_data = get_climate_data(
@@ -694,13 +705,14 @@ def main():
     with st.sidebar:
         if 'year' in df.columns:
             years = sorted(df['year'].unique())
-            selected_years = year_filter.slider(
-                "Période:",
-                int(min(years)),
-                int(max(years)),
-                (int(min(years)), int(max(years)))
-            )
-            df = df[(df['year'] >= selected_years[0]) & (df['year'] <= selected_years[1])]
+            if len(years) > 0:
+                selected_years = year_filter.slider(
+                    "Période:",
+                    int(min(years)),
+                    int(max(years)),
+                    (int(min(years)), int(max(years)))
+                )
+                df = df[(df['year'] >= selected_years[0]) & (df['year'] <= selected_years[1])]
         
         if 'continent' in df.columns:
             continents = ['Tous'] + sorted(df['continent'].unique().tolist())
@@ -710,6 +722,11 @@ def main():
             )
             if selected_continent != 'Tous':
                 df = df[df['continent'] == selected_continent]
+    
+    # Vérifier à nouveau si le dataframe n'est pas vide après filtrage
+    if df.empty:
+        st.error("❌ Aucune donnée disponible après filtrage. Ajustez vos critères.")
+        return
     
     # =============================================================
     # PAGES AVEC ANIMATIONS
@@ -725,34 +742,34 @@ def main():
         with col1:
             st.metric(
                 "🌡️ Température Moy.",
-                f"{kpis['temp_moy']:.1f}°C",
-                f"{kpis['temp_trend']:+.2f}°C/siècle"
+                f"{kpis.get('temp_moy', 0):.1f}°C",
+                f"{kpis.get('temp_trend', 0):+.2f}°C/siècle"
             )
         
         with col2:
             st.metric(
                 "💧 Précipitations",
-                f"{kpis['pluie_totale']:,.0f} mm",
-                f"{kpis['nb_annees']} années"
+                f"{kpis.get('pluie_totale', 0):,.0f} mm",
+                f"{kpis.get('nb_annees', 0)} années"
             )
         
         with col3:
             st.metric(
                 "⚠️ Canicules",
-                f"{kpis['heatwaves']:.1f}%",
-                f"Max: {kpis['temp_max']:.1f}°C"
+                f"{kpis.get('heatwaves', 0):.1f}%",
+                f"Max: {kpis.get('temp_max', 0):.1f}°C"
             )
         
         with col4:
             st.metric(
                 "🌞 Radiation Solaire",
-                f"{kpis['solar_avg']:.0f} W/m²",
-                f"Vent: {kpis['wind_avg']:.1f} m/s"
+                f"{kpis.get('solar_avg', 0):.0f} W/m²",
+                f"Vent: {kpis.get('wind_avg', 0):.1f} m/s"
             )
         
         with col5:
             if "continents" in kpis:
-                st.metric("🌐 Continents", f"{kpis['continents']}", "Données globales")
+                st.metric("🌐 Continents", f"{kpis.get('continents', 1)}", "Données globales")
         
         st.markdown("---")
         
@@ -810,18 +827,6 @@ def main():
             with col1:
                 st.markdown("#### Évolution Temporelle Animée")
                 fig_temp = create_temperature_evolution(df)
-                if auto_play:
-                    # Ajouter animation automatique
-                    fig_temp.update_layout(
-                        updatemenus=[dict(
-                            type="buttons",
-                            buttons=[dict(
-                                label="▶️ Play",
-                                method="animate",
-                                args=[None, {"frame": {"duration": animation_speed, "redraw": True}, "fromcurrent": True}]
-                            )]
-                        )]
-                    )
                 st.plotly_chart(fig_temp, use_container_width=True)
             
             with col2:
@@ -844,17 +849,6 @@ def main():
             with col1:
                 st.markdown("#### Précipitations Animées")
                 fig_prcp = create_precipitation_chart(df)
-                if auto_play:
-                    fig_prcp.update_layout(
-                        updatemenus=[dict(
-                            type="buttons",
-                            buttons=[dict(
-                                label="▶️ Play",
-                                method="animate",
-                                args=[None, {"frame": {"duration": animation_speed, "redraw": True}, "fromcurrent": True}]
-                            )]
-                        )]
-                    )
                 st.plotly_chart(fig_prcp, use_container_width=True)
             
             with col2:
@@ -872,21 +866,12 @@ def main():
             # Statistiques descriptives avec style
             st.markdown("#### 📊 Statistiques Descriptives Avancées")
             numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-            stats_df = df[numeric_cols].describe().T
-            stats_df['CV'] = (stats_df['std'] / stats_df['mean'] * 100).round(2)
-            stats_df['IQR'] = stats_df['75%'] - stats_df['25%']
-            
-            # Appliquer un style coloré au dataframe
-            def highlight_stats(val):
-                if isinstance(val, (int, float)):
-                    if val > stats_df['mean'].mean():
-                        return 'background-color: #ffcccc'
-                    elif val < stats_df['mean'].mean():
-                        return 'background-color: #ccffcc'
-                return ''
-            
-            styled_df = stats_df.style.applymap(highlight_stats, subset=pd.IndexSlice[:, ['mean', 'std', 'CV']])
-            st.dataframe(styled_df, use_container_width=True)
+            if numeric_cols:
+                stats_df = df[numeric_cols].describe().T
+                stats_df['CV'] = (stats_df['std'] / stats_df['mean'] * 100).round(2)
+                stats_df['IQR'] = stats_df['75%'] - stats_df['25%']
+                
+                st.dataframe(stats_df, use_container_width=True)
     
     elif page == "🌐 Visualisations 3D":
         st.title("🌐 Visualisations 3D Interactives")
@@ -926,23 +911,39 @@ def main():
             # Options de visualisation 3D
             st.markdown("**Options d'affichage :**")
             
-            size_var = st.selectbox(
-                "Taille des points par:",
-                ['solar_radiation', 'wind_speed', 'prcp', 'tavg']
-            )
+            size_options = ['solar_radiation', 'wind_speed', 'prcp', 'tavg']
+            size_options = [opt for opt in size_options if opt in df.columns]
+            if size_options:
+                size_var = st.selectbox(
+                    "Taille des points par:",
+                    size_options
+                )
+            else:
+                size_var = None
             
-            color_var = st.selectbox(
-                "Couleur par:",
-                ['continent', 'year', 'month', 'tavg']
-            )
+            color_options = ['continent', 'year', 'month', 'tavg']
+            color_options = [opt for opt in color_options if opt in df.columns]
+            if color_options:
+                color_var = st.selectbox(
+                    "Couleur par:",
+                    color_options
+                )
+            else:
+                color_var = None
             
-            z_var = st.selectbox(
-                "Axe Z:",
-                ['humidity', 'prcp', 'wind_speed', 'solar_radiation']
-            )
+            z_options = ['humidity', 'prcp', 'wind_speed', 'solar_radiation']
+            z_options = [opt for opt in z_options if opt in df.columns]
+            if z_options:
+                z_var = st.selectbox(
+                    "Axe Z:",
+                    z_options
+                )
+            else:
+                z_var = 'humidity'
             
-            if st.button("🔄 Mettre à jour la vue 3D"):
-                fig_custom = px.scatter_3d(df.sample(min(1000, len(df))),
+            if st.button("🔄 Mettre à jour la vue 3D") and size_var and color_var:
+                sample_data = df.sample(min(1000, len(df)))
+                fig_custom = px.scatter_3d(sample_data,
                                           x='tavg',
                                           y='prcp',
                                           z=z_var,
@@ -952,14 +953,6 @@ def main():
                                           height=500)
                 
                 st.plotly_chart(fig_custom, use_container_width=True)
-            
-            st.markdown("---")
-            st.markdown("**Tips :**")
-            st.markdown("""
-            - Utilisez différentes combinaisons d'axes pour découvrir des relations
-            - La taille et la couleur aident à visualiser plusieurs dimensions
-            - Tournez la vue pour mieux comprendre les relations 3D
-            """)
     
     elif page == "🗺️ Carte Animée":
         st.title("🗺️ Carte Climatique Animée")
@@ -969,18 +962,6 @@ def main():
         with col1:
             st.markdown("#### 🌍 Carte Mondiale Interactive")
             fig_map = create_animated_temperature_map(df)
-            
-            if auto_play:
-                fig_map.update_layout(
-                    updatemenus=[dict(
-                        type="buttons",
-                        buttons=[dict(
-                            label="▶️ Play Animation",
-                            method="animate",
-                            args=[None, {"frame": {"duration": animation_speed, "redraw": True}, "fromcurrent": True}]
-                        )]
-                    )]
-                )
             
             st.plotly_chart(fig_map, use_container_width=True, config={'displayModeBar': True})
         
@@ -1012,26 +993,29 @@ def main():
                 color_col = 'tavg' if map_type == 'Températures' else 'prcp'
                 title = f'🌍 {map_type} - Animation Mondiale'
                 
-                fig_custom_map = px.scatter_geo(yearly_avg,
-                                               lat='lat',
-                                               lon='lon',
-                                               color=color_col,
-                                               size='prcp',
-                                               animation_frame='year',
-                                               color_continuous_scale='Viridis',
-                                               projection=projection,
-                                               title=title,
-                                               height=500,
-                                               opacity=map_opacity)
-                
-                fig_custom_map.update_traces(marker=dict(size=point_size))
-                st.plotly_chart(fig_custom_map, use_container_width=True)
+                if not yearly_avg.empty:
+                    fig_custom_map = px.scatter_geo(yearly_avg,
+                                                   lat='lat',
+                                                   lon='lon',
+                                                   color=color_col,
+                                                   size='prcp',
+                                                   animation_frame='year',
+                                                   color_continuous_scale='Viridis',
+                                                   projection=projection,
+                                                   title=title,
+                                                   height=500,
+                                                   opacity=map_opacity)
+                    
+                    fig_custom_map.update_traces(marker=dict(size=point_size))
+                    st.plotly_chart(fig_custom_map, use_container_width=True)
             
             st.markdown("---")
             st.markdown("**Statistiques Géographiques :**")
             st.metric("📍 Points de données", f"{len(df):,}")
-            st.metric("🌐 Étendue Lat.", f"{df['lat'].max() - df['lat'].min():.1f}°")
-            st.metric("🌐 Étendue Lon.", f"{df['lon'].max() - df['lon'].min():.1f}°")
+            if 'lat' in df.columns:
+                st.metric("🌐 Étendue Lat.", f"{df['lat'].max() - df['lat'].min():.1f}°")
+            if 'lon' in df.columns:
+                st.metric("🌐 Étendue Lon.", f"{df['lon'].max() - df['lon'].min():.1f}°")
     
     elif page == "🎯 Radar & Parallèles":
         st.title("🎯 Visualisations Avancées")
@@ -1043,15 +1027,20 @@ def main():
             
             with col1:
                 st.markdown("#### Graphique Radar des Variables Climatiques")
-                selected_year = st.slider(
-                    "Sélectionner l'année:",
-                    min_value=int(df['year'].min()),
-                    max_value=int(df['year'].max()),
-                    value=int(df['year'].max())
-                )
-                
-                radar_fig = create_radar_chart(df, selected_year)
-                st.plotly_chart(radar_fig, use_container_width=True)
+                if 'year' in df.columns:
+                    years = sorted(df['year'].unique())
+                    if len(years) > 0:
+                        selected_year = st.slider(
+                            "Sélectionner l'année:",
+                            min_value=int(min(years)),
+                            max_value=int(max(years)),
+                            value=int(max(years))
+                        )
+                        
+                        radar_fig = create_radar_chart(df, selected_year)
+                        st.plotly_chart(radar_fig, use_container_width=True)
+                else:
+                    st.warning("La colonne 'year' n'est pas disponible dans les données.")
             
             with col2:
                 st.markdown("#### 📋 Légende Radar")
@@ -1073,70 +1062,95 @@ def main():
                 
                 # Comparaison entre années
                 st.markdown("#### Comparer deux années")
-                year1 = st.selectbox("Année 1", sorted(df['year'].unique()), index=-2)
-                year2 = st.selectbox("Année 2", sorted(df['year'].unique()), index=-1)
-                
-                if year1 != year2:
-                    # Créer un radar comparatif
-                    fig_compare = go.Figure()
-                    
-                    for year, color in zip([year1, year2], ['blue', 'red']):
-                        year_data = df[df['year'] == year]
-                        if len(year_data) > 0:
-                            avg_data = year_data[['tavg', 'tmax', 'tmin', 'prcp', 'humidity', 'wind_speed']].mean()
-                            max_vals = df[['tavg', 'tmax', 'tmin', 'prcp', 'humidity', 'wind_speed']].max()
-                            min_vals = df[['tavg', 'tmax', 'tmin', 'prcp', 'humidity', 'wind_speed']].min()
-                            normalized_data = (avg_data - min_vals) / (max_vals - min_vals)
+                if 'year' in df.columns:
+                    available_years = sorted(df['year'].unique())
+                    if len(available_years) >= 2:
+                        # Calculer les indices pour les deux dernières années
+                        year1_idx = max(0, len(available_years) - 2)
+                        year2_idx = max(0, len(available_years) - 1)
+                        
+                        year1 = st.selectbox("Année 1", available_years, index=year1_idx)
+                        year2 = st.selectbox("Année 2", available_years, index=year2_idx)
+                        
+                        if year1 != year2:
+                            # Créer un radar comparatif
+                            fig_compare = go.Figure()
                             
-                            fig_compare.add_trace(go.Scatterpolar(
-                                r=[
-                                    normalized_data['tavg'],
-                                    normalized_data['tmax'],
-                                    normalized_data['tmin'],
-                                    normalized_data['prcp'] / 100,
-                                    normalized_data['humidity'] / 100,
-                                    normalized_data['wind_speed'] / 20
-                                ],
-                                theta=['Temp Moy', 'Temp Max', 'Temp Min', 'Précip', 'Humidité', 'Vent'],
-                                fill='toself',
-                                name=f'Année {year}',
-                                line_color=color,
-                                opacity=0.5
-                            ))
-                    
-                    fig_compare.update_layout(
-                        polar=dict(radialaxis=dict(visible=True, range=[0, 1])),
-                        title=f'📊 Comparaison {year1} vs {year2}',
-                        height=400
-                    )
-                    
-                    st.plotly_chart(fig_compare, use_container_width=True)
+                            for year, color in zip([year1, year2], ['blue', 'red']):
+                                year_data = df[df['year'] == year]
+                                if len(year_data) > 0:
+                                    required_cols = ['tavg', 'tmax', 'tmin', 'prcp', 'humidity', 'wind_speed']
+                                    # Vérifier les colonnes manquantes
+                                    for col in required_cols:
+                                        if col not in year_data.columns:
+                                            if col == 'prcp':
+                                                year_data[col] = 0
+                                            elif col in ['tavg', 'tmax', 'tmin']:
+                                                year_data[col] = 20
+                                            elif col == 'humidity':
+                                                year_data[col] = 50
+                                            elif col == 'wind_speed':
+                                                year_data[col] = 5
+                                    
+                                    avg_data = year_data[required_cols].mean()
+                                    max_vals = df[required_cols].max()
+                                    min_vals = df[required_cols].min()
+                                    normalized_data = (avg_data - min_vals) / (max_vals - min_vals)
+                                    
+                                    fig_compare.add_trace(go.Scatterpolar(
+                                        r=[
+                                            normalized_data['tavg'],
+                                            normalized_data['tmax'],
+                                            normalized_data['tmin'],
+                                            normalized_data['prcp'] / 100,
+                                            normalized_data['humidity'] / 100,
+                                            normalized_data['wind_speed'] / 20
+                                        ],
+                                        theta=['Temp Moy', 'Temp Max', 'Temp Min', 'Précip', 'Humidité', 'Vent'],
+                                        fill='toself',
+                                        name=f'Année {year}',
+                                        line_color=color,
+                                        opacity=0.5
+                                    ))
+                            
+                            fig_compare.update_layout(
+                                polar=dict(radialaxis=dict(visible=True, range=[0, 1])),
+                                title=f'📊 Comparaison {year1} vs {year2}',
+                                height=400
+                            )
+                            
+                            st.plotly_chart(fig_compare, use_container_width=True)
         
         with tab2:
             st.markdown("#### Diagramme de Coordonnées Parallèles")
             
-            # Sélection des années à comparer
-            available_years = sorted(df['year'].unique())
-            selected_years = st.multiselect(
-                "Sélectionner les années à comparer:",
-                available_years,
-                default=available_years[-3:] if len(available_years) >= 3 else available_years
-            )
-            
-            if selected_years:
-                parallel_fig = create_parallel_coordinates(df, selected_years)
-                st.plotly_chart(parallel_fig, use_container_width=True)
-                
-                st.markdown("**Comment interpréter :**")
-                st.markdown("""
-                - Chaque ligne représente une observation
-                - Les axes verticaux représentent les différentes variables
-                - La couleur montre la valeur de l'année
-                - Les lignes parallèles indiquent des corrélations positives
-                - Les lignes qui se croisent indiquent des corrélations négatives
-                """)
+            if 'year' in df.columns:
+                available_years = sorted(df['year'].unique())
+                if available_years:
+                    selected_years = st.multiselect(
+                        "Sélectionner les années à comparer:",
+                        available_years,
+                        default=available_years[-min(3, len(available_years)):]  # Maximum 3 dernières années
+                    )
+                    
+                    if selected_years:
+                        parallel_fig = create_parallel_coordinates(df, selected_years)
+                        st.plotly_chart(parallel_fig, use_container_width=True)
+                        
+                        st.markdown("**Comment interpréter :**")
+                        st.markdown("""
+                        - Chaque ligne représente une observation
+                        - Les axes verticaux représentent les différentes variables
+                        - La couleur montre la valeur de l'année
+                        - Les lignes parallèles indiquent des corrélations positives
+                        - Les lignes qui se croisent indiquent des corrélations négatives
+                        """)
+                    else:
+                        st.warning("Veuillez sélectionner au moins une année.")
+                else:
+                    st.warning("Aucune année disponible dans les données.")
             else:
-                st.warning("Veuillez sélectionner au moins une année.")
+                st.warning("La colonne 'year' n'est pas disponible dans les données.")
         
         with tab3:
             st.markdown("#### Graphique Stream (Courbes Empilées)")
@@ -1177,21 +1191,38 @@ def main():
             
             with col2:
                 numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-                x_var = st.selectbox("Variable X:", numeric_cols)
+                if numeric_cols:
+                    x_var = st.selectbox("Variable X:", numeric_cols)
+                else:
+                    x_var = None
             
             with col3:
-                y_var = st.selectbox("Variable Y:", numeric_cols, 
-                                   index=1 if len(numeric_cols) > 1 else 0)
+                if numeric_cols and len(numeric_cols) > 1:
+                    y_var = st.selectbox("Variable Y:", numeric_cols, 
+                                       index=1 if len(numeric_cols) > 1 else 0)
+                else:
+                    y_var = None
             
-            color_var = st.selectbox(
-                "Couleur par:",
-                [None] + ['year', 'month', 'continent', 'station']
-            )
+            categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
+            if categorical_cols:
+                color_options = [None] + categorical_cols
+                color_var = st.selectbox(
+                    "Couleur par:",
+                    color_options
+                )
+            else:
+                color_var = None
             
-            animation_var = st.selectbox(
-                "Animation par:",
-                [None, 'year', 'month', 'continent']
-            )
+            if 'year' in df.columns:
+                animation_options = [None, 'year', 'month']
+                if 'continent' in df.columns:
+                    animation_options.append('continent')
+                animation_var = st.selectbox(
+                    "Animation par:",
+                    animation_options
+                )
+            else:
+                animation_var = None
             
             # Options avancées
             with st.expander("⚙️ Options avancées"):
@@ -1199,7 +1230,7 @@ def main():
                 smoothing = st.checkbox("Lissage des courbes")
                 log_scale = st.selectbox("Échelle logarithmique:", [None, "X", "Y", "Les deux"])
             
-            if st.button("🔄 Générer la visualisation"):
+            if st.button("🔄 Générer la visualisation") and x_var and y_var:
                 # Créer le graphique personnalisé
                 if chart_type == "Ligne Interactive":
                     fig = px.line(df, x=x_var, y=y_var, color=color_var, 
@@ -1250,45 +1281,46 @@ def main():
             if 'tavg' in df.columns and 'year' in df.columns:
                 # Regression linéaire
                 yearly_avg = df.groupby('year')['tavg'].mean().reset_index()
-                coeffs = np.polyfit(yearly_avg['year'], yearly_avg['tavg'], 1)
-                trend_line = np.poly1d(coeffs)
-                
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.metric("Pente de tendance", f"{coeffs[0]*10:.3f}°C/décennie")
-                    st.metric("Intercept", f"{coeffs[1]:.2f}°C")
-                
-                with col2:
-                    correlation = yearly_avg['year'].corr(yearly_avg['tavg'])
-                    st.metric("Corrélation", f"{correlation:.3f}")
-                    st.metric("R²", f"{correlation**2:.3f}")
-                
-                # Graphique de tendance
-                fig_trend = go.Figure()
-                fig_trend.add_trace(go.Scatter(
-                    x=yearly_avg['year'],
-                    y=yearly_avg['tavg'],
-                    mode='markers',
-                    name='Données',
-                    marker=dict(size=10)
-                ))
-                fig_trend.add_trace(go.Scatter(
-                    x=yearly_avg['year'],
-                    y=trend_line(yearly_avg['year']),
-                    mode='lines',
-                    name=f'Tendance ({coeffs[0]*10:.2f}°C/décennie)',
-                    line=dict(color='red', width=3)
-                ))
-                
-                fig_trend.update_layout(
-                    title='📈 Analyse de Tendance Linéaire',
-                    xaxis_title='Année',
-                    yaxis_title='Température Moyenne (°C)',
-                    height=400
-                )
-                
-                st.plotly_chart(fig_trend, use_container_width=True)
+                if len(yearly_avg) > 1:
+                    coeffs = np.polyfit(yearly_avg['year'], yearly_avg['tavg'], 1)
+                    trend_line = np.poly1d(coeffs)
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.metric("Pente de tendance", f"{coeffs[0]*10:.3f}°C/décennie")
+                        st.metric("Intercept", f"{coeffs[1]:.2f}°C")
+                    
+                    with col2:
+                        correlation = yearly_avg['year'].corr(yearly_avg['tavg'])
+                        st.metric("Corrélation", f"{correlation:.3f}")
+                        st.metric("R²", f"{correlation**2:.3f}")
+                    
+                    # Graphique de tendance
+                    fig_trend = go.Figure()
+                    fig_trend.add_trace(go.Scatter(
+                        x=yearly_avg['year'],
+                        y=yearly_avg['tavg'],
+                        mode='markers',
+                        name='Données',
+                        marker=dict(size=10)
+                    ))
+                    fig_trend.add_trace(go.Scatter(
+                        x=yearly_avg['year'],
+                        y=trend_line(yearly_avg['year']),
+                        mode='lines',
+                        name=f'Tendance ({coeffs[0]*10:.2f}°C/décennie)',
+                        line=dict(color='red', width=3)
+                    ))
+                    
+                    fig_trend.update_layout(
+                        title='📈 Analyse de Tendance Linéaire',
+                        xaxis_title='Année',
+                        yaxis_title='Température Moyenne (°C)',
+                        height=400
+                    )
+                    
+                    st.plotly_chart(fig_trend, use_container_width=True)
             
             # Analyse saisonnière
             st.markdown("##### Analyse Saisonnière")
@@ -1360,23 +1392,26 @@ def main():
                 else:  # Parquet
                     # Pour Parquet, on utilise un buffer temporaire
                     import tempfile
-                    import pyarrow as pa
-                    import pyarrow.parquet as pq
-                    
-                    with tempfile.NamedTemporaryFile(delete=False, suffix='.parquet') as tmp:
-                        table = pa.Table.from_pandas(df)
-                        pq.write_table(table, tmp.name)
+                    try:
+                        import pyarrow as pa
+                        import pyarrow.parquet as pq
                         
-                        with open(tmp.name, 'rb') as f:
-                            parquet_data = f.read()
-                        
-                        st.download_button(
-                            "📥 Télécharger Parquet",
-                            parquet_data,
-                            "climate_data_advanced.parquet",
-                            "application/octet-stream",
-                            key='download-parquet'
-                        )
+                        with tempfile.NamedTemporaryFile(delete=False, suffix='.parquet') as tmp:
+                            table = pa.Table.from_pandas(df)
+                            pq.write_table(table, tmp.name)
+                            
+                            with open(tmp.name, 'rb') as f:
+                                parquet_data = f.read()
+                            
+                            st.download_button(
+                                "📥 Télécharger Parquet",
+                                parquet_data,
+                                "climate_data_advanced.parquet",
+                                "application/octet-stream",
+                                key='download-parquet'
+                            )
+                    except ImportError:
+                        st.error("La bibliothèque pyarrow est requise pour l'export Parquet. Installez-la avec `pip install pyarrow`")
             
             with col2:
                 st.markdown("##### Export des Visualisations")
@@ -1402,7 +1437,7 @@ def main():
                     elif chart_to_export == "Graphique 3D":
                         fig = create_3d_scatter_plot(df)
                     elif chart_to_export == "Radar Chart":
-                        fig = create_radar_chart(df, df['year'].max())
+                        fig = create_radar_chart(df, df['year'].max() if 'year' in df.columns else None)
                     else:
                         fig = create_correlation_matrix_interactive(df)
                     
