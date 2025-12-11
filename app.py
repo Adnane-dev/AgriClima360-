@@ -1,7 +1,6 @@
 # =============================================================
 # AGRICLIMA360 - Application Streamlit avec données NOAA API
 # Visualisations climatiques interactives AVEC ANIMATIONS
-# et VISUALISATIONS MASSIVES (Dask/Datashader/hvPlot/Panel)
 # =============================================================
 
 import streamlit as st
@@ -16,27 +15,12 @@ import json
 from pathlib import Path
 import time
 import io
+from streamlit.components.v1 import html
 import base64
 import tempfile
+import plotly.io as pio
 from fpdf import FPDF
-
-# Import des librairies pour visualisations massives
-try:
-    import dask.dataframe as dd
-    import datashader as ds
-    import datashader.transfer_functions as tf
-    from datashader.colors import viridis
-    import hvplot.pandas
-    import hvplot.dask
-    import holoviews as hv
-    import panel as pn
-    from holoviews.operation.datashader import datashade, dynspread
-    from holoviews import streams
-    hv.extension('bokeh')
-    DASH_AVAILABLE = True
-except ImportError:
-    DASH_AVAILABLE = False
-    st.warning("⚠️ Pour les visualisations massives, installez: `pip install dask datashader holoviews hvplot panel bokeh`")
+import os
 
 # Configuration de la page
 st.set_page_config(
@@ -151,750 +135,57 @@ def process_climate_data(df):
     df_pivot['continent'] = np.random.choice(['North America', 'Europe', 'Asia', 'Africa', 'South America', 'Oceania'], len(df_pivot))
     df_pivot['lat'] = 40.0 + np.random.uniform(-5, 5, len(df_pivot))
     df_pivot['lon'] = -100.0 + np.random.uniform(-10, 10, len(df_pivot))
-    df_pivot['elevation'] = np.random.uniform(0, 3000, len(df_pivot))
     
     return df_pivot
 
-def generate_enhanced_sample_data(num_points=500000):
-    """Génère des données de démonstration enrichies à grande échelle."""
+def generate_enhanced_sample_data():
+    """Génère des données de démonstration enrichies."""
     st.warning("Configurez votre token NOAA pour des données réelles.")
     
     years = list(range(2000, 2026))
-    stations = [f'ST{i:03d}' for i in range(1, 201)]  # 200 stations
+    stations = [f'ST{i:03d}' for i in range(1, 21)]
     continents = ['North America', 'Europe', 'Asia', 'Africa', 'South America', 'Oceania']
     
-    # Utiliser numpy pour génération rapide
-    data = {
-        'date': [],
-        'year': [],
-        'month': [],
-        'day': [],
-        'station': [],
-        'tavg': [],
-        'tmax': [],
-        'tmin': [],
-        'prcp': [],
-        'humidity': [],
-        'wind_speed': [],
-        'solar_radiation': [],
-        'continent': [],
-        'lat': [],
-        'lon': [],
-        'elevation': []
-    }
-    
-    # Générer des données pour chaque année
+    data = []
     for year in years:
-        n_samples = num_points // len(years)
-        
-        # Générer des dates aléatoires dans l'année
-        dates = pd.to_datetime([f'{year}-{np.random.randint(1,13):02d}-{np.random.randint(1,29):02d}' 
-                               for _ in range(n_samples)])
-        
-        data['date'].extend(dates)
-        data['year'].extend([year] * n_samples)
-        data['month'].extend(dates.month)
-        data['day'].extend(dates.day)
-        data['station'].extend(np.random.choice(stations, n_samples))
-        
-        # Températures avec tendance au réchauffement
-        warming_trend = 0.03 * (year - 2020)
-        base_temp = 15 + warming_trend
-        seasonal_variation = 10 * np.sin(2 * np.pi * dates.dayofyear / 365)
-        
-        tavg = base_temp + seasonal_variation + np.random.normal(0, 2, n_samples)
-        data['tavg'].extend(tavg)
-        data['tmax'].extend(tavg + 5 + np.random.normal(0, 1, n_samples))
-        data['tmin'].extend(tavg - 5 + np.random.normal(0, 1, n_samples))
-        
-        # Autres variables
-        data['prcp'].extend(np.random.exponential(5, n_samples))
-        data['humidity'].extend(np.random.uniform(30, 90, n_samples))
-        data['wind_speed'].extend(np.random.uniform(0, 20, n_samples))
-        data['solar_radiation'].extend(np.random.uniform(100, 800, n_samples))
-        data['continent'].extend(np.random.choice(continents, n_samples))
-        data['lat'].extend(np.random.uniform(-90, 90, n_samples))
-        data['lon'].extend(np.random.uniform(-180, 180, n_samples))
-        data['elevation'].extend(np.random.uniform(0, 3000, n_samples))
-    
-    return pd.DataFrame(data)
-
-# =============================================================
-# 3. FONCTIONS POUR VISUALISATIONS MASSIVES
-# =============================================================
-
-def create_datashader_scatter(df_dask, x_col='tavg', y_col='prcp', color_col='year', 
-                             width=800, height=600, cmap='viridis'):
-    """Crée une visualisation Datashader pour des millions de points."""
-    if not DASH_AVAILABLE:
-        return None
-    
-    try:
-        # Convertir en dataframe Dask si nécessaire
-        if not isinstance(df_dask, dd.DataFrame):
-            df_dask = dd.from_pandas(df_dask, npartitions=10)
-        
-        # Préparer les données
-        x = df_dask[x_col].compute()
-        y = df_dask[y_col].compute()
-        
-        if color_col in df_dask.columns:
-            color = df_dask[color_col].compute()
-        else:
-            color = None
-        
-        # Créer le canvas Datashader
-        canvas = ds.Canvas(plot_width=width, plot_height=height)
-        
-        # Agréger les points
-        if color is not None:
-            agg = canvas.points(pd.DataFrame({x_col: x, y_col: y}), x_col, y_col, ds.mean(color_col))
-        else:
-            agg = canvas.points(pd.DataFrame({x_col: x, y_col: y}), x_col, y_col)
-        
-        # Appliquer la colormap
-        img = tf.shade(agg, cmap=plt.cm.get_cmap(cmap))
-        img = tf.set_background(img, 'white')
-        
-        # Convertir en image PIL pour affichage
-        from PIL import Image
-        img_pil = Image.fromarray(np.array(img.to_pil()))
-        
-        return img_pil
-        
-    except Exception as e:
-        st.error(f"Erreur Datashader: {e}")
-        return None
-
-def create_hvplot_large_data(df, x='tavg', y='prcp', color='year', 
-                           datashade=True, width=800, height=500):
-    """Crée une visualisation hvPlot avec Datashader pour grands datasets."""
-    if not DASH_AVAILABLE:
-        return None
-    
-    try:
-        # Créer le plot avec hvPlot
-        plot = df.hvplot.scatter(
-            x=x, 
-            y=y, 
-            c=color,
-            cmap='viridis',
-            colorbar=True,
-            title=f'{y} vs {x} ({len(df):,} points)',
-            width=width,
-            height=height,
-            alpha=0.3 if not datashade else 1.0,
-            datashade=datashade,
-            dynspread=True if datashade else False
-        )
-        
-        return plot
-        
-    except Exception as e:
-        st.error(f"Erreur hvPlot: {e}")
-        return None
-
-def create_density_heatmap_datashader(df_dask, x_col='lon', y_col='lat', z_col='tavg',
-                                     width=800, height=600, cmap='hot'):
-    """Crée une carte de densité avec Datashader."""
-    if not DASH_AVAILABLE:
-        return None
-    
-    try:
-        if not isinstance(df_dask, dd.DataFrame):
-            df_dask = dd.from_pandas(df_dask, npartitions=10)
-        
-        # Calculer les agrégations
-        canvas = ds.Canvas(plot_width=width, plot_height=height)
-        
-        if z_col:
-            # Heatmap avec valeur moyenne
-            agg = canvas.points(df_dask.compute(), x_col, y_col, ds.mean(z_col))
-            img = tf.shade(agg, cmap=plt.cm.get_cmap(cmap))
-        else:
-            # Simple comptage de points
-            agg = canvas.points(df_dask.compute(), x_col, y_col)
-            img = tf.shade(agg, cmap=plt.cm.get_cmap(cmap))
-        
-        img = tf.set_background(img, 'black')
-        
-        # Convertir pour affichage
-        from PIL import Image
-        img_pil = Image.fromarray(np.array(img.to_pil()))
-        
-        return img_pil
-        
-    except Exception as e:
-        st.error(f"Erreur densité Datashader: {e}")
-        return None
-
-def create_interactive_large_map(df, lat_col='lat', lon_col='lon', value_col='tavg',
-                                aggregation='mean', tiles='CartoDark', width=800, height=600):
-    """Crée une carte interactive pour grands datasets."""
-    if not DASH_AVAILABLE:
-        return None
-    
-    try:
-        # Utiliser hvPlot avec Datashader pour la carte
-        map_plot = df.hvplot.points(
-            x=lon_col,
-            y=lat_col,
-            c=value_col,
-            cmap='viridis',
-            geo=True,
-            tiles=tiles,
-            alpha=0.5,
-            frame_width=width,
-            frame_height=height,
-            title=f'Carte des {value_col} ({len(df):,} points)',
-            datashade=True,
-            aggregator=aggregation
-        )
-        
-        return map_plot
-        
-    except Exception as e:
-        st.error(f"Erreur carte interactive: {e}")
-        return None
-
-def create_time_series_aggregation(df_dask, time_col='date', value_col='tavg',
-                                 freq='M', aggregation='mean', width=800, height=400):
-    """Crée une série temporelle agrégée pour grands datasets."""
-    if not DASH_AVAILABLE:
-        return None
-    
-    try:
-        if not isinstance(df_dask, dd.DataFrame):
-            df_dask = dd.from_pandas(df_dask, npartitions=10)
-        
-        # Agrégation temporelle avec Dask
-        df_dask[time_col] = dd.to_datetime(df_dask[time_col])
-        df_dask = df_dask.set_index(time_col)
-        
-        if aggregation == 'mean':
-            aggregated = df_dask[value_col].resample(freq).mean().compute()
-        elif aggregation == 'sum':
-            aggregated = df_dask[value_col].resample(freq).sum().compute()
-        elif aggregation == 'max':
-            aggregated = df_dask[value_col].resample(freq).max().compute()
-        else:  # min
-            aggregated = df_dask[value_col].resample(freq).min().compute()
-        
-        # Créer le plot avec hvPlot
-        plot = aggregated.hvplot(
-            width=width,
-            height=height,
-            title=f'{value_col} ({aggregation}) par {freq}',
-            line_width=2,
-            grid=True,
-            ylabel=value_col,
-            xlabel='Date'
-        )
-        
-        return plot
-        
-    except Exception as e:
-        st.error(f"Erreur série temporelle: {e}")
-        return None
-
-def create_parallel_coordinates_large(df_sample, cols=None, alpha=0.1, width=1000, height=500):
-    """Crée un diagramme de coordonnées parallèles pour grands datasets."""
-    if not DASH_AVAILABLE or len(df_sample) > 10000:
-        # Pour très grands datasets, on échantillonne
-        df_sample = df_sample.sample(min(10000, len(df_sample)))
-    
-    try:
-        if cols is None:
-            cols = ['tavg', 'tmax', 'tmin', 'prcp', 'humidity', 'wind_speed']
-        
-        cols = [c for c in cols if c in df_sample.columns]
-        
-        # Créer le plot avec hvPlot
-        plot = df_sample.hvplot.parallel_coordinates(
-            dimensions=cols,
-            label='Variables climatiques',
-            width=width,
-            height=height,
-            alpha=alpha
-        )
-        
-        return plot
-        
-    except Exception as e:
-        st.error(f"Erreur coordonnées parallèles: {e}")
-        return None
-
-# =============================================================
-# 4. INTERFACE STREAMLIT AVANCÉE AVEC VISUALISATIONS MASSIVES
-# =============================================================
-
-def main():
-    # Sidebar - Configuration
-    with st.sidebar:
-        st.image("https://img.icons8.com/color/96/000000/wheat.png", width=100)
-        st.title("🌾 AgriClima360")
-        st.markdown("### Dashboard Climatique Avancé")
-        st.markdown("*Avec visualisations massives*")
-        st.markdown("---")
-        
-        st.header("⚙️ Configuration")
-        
-        # Sélection de la source de données
-        data_source = st.radio(
-            "Source de données:",
-            ["API NOAA (Réelles)", "Démonstration Grande Échelle"]
-        )
-        
-        if data_source == "Démonstration Grande Échelle":
-            data_size = st.select_slider(
-                "Taille du dataset:",
-                options=["100K", "500K", "1M", "2M"],
-                value="500K"
-            )
-            size_map = {"100K": 100000, "500K": 500000, "1M": 1000000, "2M": 2000000}
-            sample_size = size_map[data_size]
-        
-        if data_source == "API NOAA (Réelles)":
-            st.info("ℹ️ Token NOAA requis")
+        for station in stations:
+            warming_trend = 0.03 * (year - 2020)
+            base_temp = 15 + warming_trend + 10 * np.sin(2 * np.pi * 183 / 365)  # Milieu d'année
             
-            with st.expander("📡 Paramètres API NOAA"):
-                dataset = st.selectbox(
-                    "Dataset:",
-                    ["GHCND", "GSOM", "GSOY"],
-                    help="GHCND = Données quotidiennes, GSOM = Mensuelles, GSOY = Annuelles"
-                )
+            for month in range(1, 13):
+                # Générer entre 28 et 31 jours selon le mois
+                days_in_month = 30 if month in [4, 6, 9, 11] else 31 if month != 2 else 28
                 
-                col1, col2 = st.columns(2)
-                with col1:
-                    start_date = st.date_input(
-                        "Date début:",
-                        value=datetime(2020, 1, 1),
-                        min_value=datetime(1900, 1, 1)
-                    )
-                
-                with col2:
-                    end_date = st.date_input(
-                        "Date fin:",
-                        value=datetime(2023, 12, 31),
-                        max_value=datetime.now()
-                    )
-                
-                location = st.text_input(
-                    "Localisation (optionnel):",
-                    placeholder="ex: FIPS:US"
-                )
-                
-                datatypes = st.multiselect(
-                    "Types de données:",
-                    ["TMAX", "TMIN", "TAVG", "PRCP", "SNOW", "AWND", "WSF2"],
-                    default=["TMAX", "TMIN", "PRCP", "AWND"]
-                )
-                
-                limit = st.slider("Nombre de résultats:", 100, 1000000, 10000)
-        
-        st.markdown("---")
-        
-        # Navigation avec nouvelle option pour visualisations massives
-        st.header("📊 Navigation")
-        page = st.radio(
-            "Sections:",
-            ["🏠 Vue d'ensemble", "📈 Analyses Animées", "🌐 Visualisations 3D", 
-             "🗺️ Carte Animée", "🚀 Visualisations Massives", "🔬 Avancé", "🎯 Radar & Parallèles"]
-        )
-        
-        st.markdown("---")
-        
-        # Filtres
-        st.header("🎛️ Filtres")
-        year_filter = st.empty()
-        continent_filter = st.empty()
-        
-        st.markdown("---")
-        
-        # Boutons d'export
-        st.header("💾 Export")
-        export_format = st.selectbox("Format d'export:", ["CSV", "JSON", "Excel", "PDF Rapport"])
-        
-        st.markdown("---")
-        
-        # Information sur les librairies
-        if DASH_AVAILABLE:
-            st.success("✅ Visualisations massives activées")
-        else:
-            st.warning("⚠️ Visualisations massives non disponibles")
-            st.info("Installez: `pip install dask datashader holoviews hvplot panel bokeh`")
-    
-    # Chargement des données
-    with st.spinner("⏳ Chargement des données enrichies..."):
-        if data_source == "API NOAA (Réelles)":
-            if NOAA_TOKEN == "YOUR_TOKEN_HERE":
-                df = generate_enhanced_sample_data(100000)
-            else:
-                raw_data = get_climate_data(
-                    dataset_id=dataset,
-                    start_date=start_date.strftime("%Y-%m-%d"),
-                    end_date=end_date.strftime("%Y-%m-%d"),
-                    location_id=location if location else None,
-                    datatypes=datatypes if datatypes else None,
-                    limit=limit
-                )
-                df = process_climate_data(raw_data)
-        else:
-            df = generate_enhanced_sample_data(sample_size)
-    
-    # Vérification des données
-    if df.empty:
-        st.error("❌ Aucune donnée disponible. Vérifiez vos paramètres.")
-        return
-    
-    # Afficher les statistiques du dataset
-    st.sidebar.markdown("---")
-    st.sidebar.markdown(f"**📊 Statistiques Dataset:**")
-    st.sidebar.markdown(f"• Points de données: **{len(df):,}**")
-    st.sidebar.markdown(f"• Période: **{df['year'].min()} - {df['year'].max()}**")
-    st.sidebar.markdown(f"• Stations: **{df['station'].nunique()}**")
-    st.sidebar.markdown(f"• Colonnes: **{len(df.columns)}**")
-    
-    # Calcul des KPIs
-    kpis = compute_kpis(df)
-    
-    # Filtres dans la sidebar
-    with st.sidebar:
-        if 'year' in df.columns:
-            years = sorted(df['year'].unique())
-            if len(years) > 0:
-                selected_years = year_filter.slider(
-                    "Période:",
-                    int(min(years)),
-                    int(max(years)),
-                    (int(min(years)), int(max(years)))
-                )
-                df = df[(df['year'] >= selected_years[0]) & (df['year'] <= selected_years[1])]
-        
-        if 'continent' in df.columns:
-            continents = ['Tous'] + sorted(df['continent'].unique().tolist())
-            selected_continent = continent_filter.selectbox(
-                "Continent:",
-                continents
-            )
-            if selected_continent != 'Tous':
-                df = df[df['continent'] == selected_continent]
-    
-    # =============================================================
-    # NOUVELLE PAGE : VISUALISATIONS MASSIVES
-    # =============================================================
-    
-    if page == "🚀 Visualisations Massives":
-        st.title("🚀 Visualisations Massives")
-        st.markdown(f"### Analyse de {len(df):,} points de données")
-        
-        if not DASH_AVAILABLE:
-            st.error("""
-            ❌ Les librairies pour visualisations massives ne sont pas installées.
-            
-            **Installation requise:**
-            ```bash
-            pip install dask datashader holoviews hvplot panel bokeh
-            ```
-            
-            Redémarrez l'application après l'installation.
-            """)
-            return
-        
-        # Informations sur les performances
-        col_info1, col_info2, col_info3 = st.columns(3)
-        with col_info1:
-            st.metric("Points de données", f"{len(df):,}")
-        with col_info2:
-            st.metric("Taille mémoire", f"{(df.memory_usage().sum() / 1024 / 1024):.1f} MB")
-        with col_info3:
-            st.metric("Technologie", "Dask/Datashader")
-        
-        st.markdown("---")
-        
-        # Sélection du type de visualisation
-        viz_type = st.selectbox(
-            "Type de visualisation:",
-            ["Nuage de points massif", "Carte de densité", "Série temporelle agrégée", 
-             "Coordonnées parallèles", "Heatmap géographique", "Comparaison multivariée"]
-        )
-        
-        # Options spécifiques selon le type
-        if viz_type == "Nuage de points massif":
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                x_var = st.selectbox("Variable X:", df.select_dtypes(include=[np.number]).columns.tolist(), index=0)
-            with col2:
-                y_var = st.selectbox("Variable Y:", df.select_dtypes(include=[np.number]).columns.tolist(), index=1)
-            with col3:
-                color_var = st.selectbox("Variable couleur:", ['year', 'month', 'continent', 'tavg'])
-            
-            use_datashader = st.checkbox("Utiliser Datashader (recommandé pour > 50K points)", value=len(df) > 50000)
-            
-            if st.button("🔄 Générer la visualisation"):
-                with st.spinner("Génération de la visualisation massive..."):
-                    if use_datashader:
-                        # Utiliser Datashader pour visualisation massive
-                        img = create_datashader_scatter(
-                            df, 
-                            x_col=x_var, 
-                            y_col=y_var, 
-                            color_col=color_var,
-                            width=1000, 
-                            height=600
-                        )
-                        
-                        if img:
-                            st.image(img, caption=f"Datashader: {y_var} vs {x_var} ({len(df):,} points)")
-                            st.info("ℹ️ Datashader agrège les points pour une visualisation optimale des grands datasets")
-                    else:
-                        # Utiliser hvPlot avec datashading
-                        plot = create_hvplot_large_data(
-                            df, 
-                            x=x_var, 
-                            y=y_var, 
-                            color=color_var,
-                            datashade=True,
-                            width=1000, 
-                            height=600
-                        )
-                        
-                        if plot:
-                            # Convertir le plot HoloViews en HTML pour l'affichage
-                            import holoviews as hv
-                            hv.save(plot, 'temp_plot.html')
-                            with open('temp_plot.html', 'r') as f:
-                                html_content = f.read()
-                            st.components.v1.html(html_content, height=650)
-        
-        elif viz_type == "Carte de densité":
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                x_var = st.selectbox("Variable X (géographique):", ['lon', 'lat', 'tavg', 'prcp'], index=0)
-            with col2:
-                y_var = st.selectbox("Variable Y (géographique):", ['lat', 'lon', 'humidity', 'elevation'], index=1)
-            with col3:
-                z_var = st.selectbox("Variable valeur:", ['tavg', 'prcp', 'humidity', 'wind_speed'], index=0)
-            
-            colormap = st.selectbox("Colormap:", ['viridis', 'plasma', 'hot', 'coolwarm', 'rainbow'])
-            
-            if st.button("🔄 Générer la carte de densité"):
-                with st.spinner("Création de la carte de densité..."):
-                    img = create_density_heatmap_datashader(
-                        df, 
-                        x_col=x_var, 
-                        y_col=y_var, 
-                        z_col=z_var,
-                        width=1000, 
-                        height=600,
-                        cmap=colormap
-                    )
+                for day in range(1, days_in_month + 1):
+                    try:
+                        date = datetime(year, month, day)
+                    except ValueError:
+                        continue
                     
-                    if img:
-                        st.image(img, caption=f"Carte de densité: {z_var} par {x_var}/{y_var}")
-                        st.info("ℹ️ Chaque pixel représente la valeur moyenne dans cette zone")
-        
-        elif viz_type == "Série temporelle agrégée":
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                value_var = st.selectbox("Variable à analyser:", ['tavg', 'tmax', 'tmin', 'prcp'], index=0)
-            with col2:
-                freq = st.selectbox("Fréquence d'agrégation:", ['D', 'W', 'M', 'Q', 'Y'], index=2)
-                freq_names = {'D': 'Jour', 'W': 'Semaine', 'M': 'Mois', 'Q': 'Trimestre', 'Y': 'Année'}
-            with col3:
-                aggregation = st.selectbox("Type d'agrégation:", ['mean', 'sum', 'max', 'min'], index=0)
-            
-            if st.button("🔄 Générer la série temporelle"):
-                with st.spinner("Aggrégation des données temporelles..."):
-                    # Convertir en Dask DataFrame pour le traitement
-                    df_dask = dd.from_pandas(df, npartitions=10)
+                    day_of_year = date.timetuple().tm_yday
                     
-                    plot = create_time_series_aggregation(
-                        df_dask,
-                        time_col='date',
-                        value_col=value_var,
-                        freq=freq,
-                        aggregation=aggregation,
-                        width=1000,
-                        height=500
-                    )
+                    seasonal_variation = 10 * np.sin(2 * np.pi * day_of_year / 365)
                     
-                    if plot:
-                        # Afficher les statistiques d'agrégation
-                        st.success(f"✅ Données agrégées par {freq_names[freq]} ({aggregation})")
-                        
-                        # Convertir et afficher le plot
-                        import holoviews as hv
-                        hv.save(plot, 'temp_timeseries.html')
-                        with open('temp_timeseries.html', 'r') as f:
-                            html_content = f.read()
-                        st.components.v1.html(html_content, height=550)
-        
-        elif viz_type == "Coordonnées parallèles":
-            st.info("ℹ️ Cette visualisation échantillonne automatiquement les données pour > 10K points")
-            
-            # Sélection des variables
-            available_cols = ['tavg', 'tmax', 'tmin', 'prcp', 'humidity', 'wind_speed', 'solar_radiation', 'elevation']
-            selected_cols = st.multiselect(
-                "Variables à inclure:",
-                available_cols,
-                default=['tavg', 'tmax', 'tmin', 'prcp', 'humidity']
-            )
-            
-            alpha = st.slider("Transparence des lignes:", 0.01, 0.5, 0.1, 0.01)
-            
-            if st.button("🔄 Générer les coordonnées parallèles"):
-                with st.spinner("Construction du diagramme..."):
-                    # Échantillonner pour les très grands datasets
-                    if len(df) > 10000:
-                        df_sample = df.sample(10000)
-                        st.warning(f"⚠️ Échantillonnage à 10K points pour la lisibilité (sur {len(df):,})")
-                    else:
-                        df_sample = df
-                    
-                    plot = create_parallel_coordinates_large(
-                        df_sample,
-                        cols=selected_cols,
-                        alpha=alpha,
-                        width=1000,
-                        height=500
-                    )
-                    
-                    if plot:
-                        import holoviews as hv
-                        hv.save(plot, 'temp_parallel.html')
-                        with open('temp_parallel.html', 'r') as f:
-                            html_content = f.read()
-                        st.components.v1.html(html_content, height=550)
-        
-        elif viz_type == "Heatmap géographique":
-            st.markdown("### 🌍 Visualisation Géographique Massive")
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                value_var = st.selectbox("Variable à cartographier:", ['tavg', 'prcp', 'humidity', 'wind_speed'], index=0)
-                aggregation = st.selectbox("Méthode d'agrégation:", ['mean', 'max', 'min', 'count'], index=0)
-            
-            with col2:
-                tiles = st.selectbox("Fond de carte:", ['CartoLight', 'CartoDark', 'OSM', 'EsriImagery'], index=0)
-                point_size = st.slider("Taille des points:", 1, 20, 5)
-            
-            if st.button("🗺️ Générer la carte interactive"):
-                with st.spinner("Construction de la carte géographique..."):
-                    # Échantillonner pour les très grands datasets
-                    if len(df) > 100000:
-                        df_sample = df.sample(100000)
-                        st.warning(f"⚠️ Échantillonnage à 100K points pour la performance (sur {len(df):,})")
-                    else:
-                        df_sample = df
-                    
-                    map_plot = create_interactive_large_map(
-                        df_sample,
-                        lat_col='lat',
-                        lon_col='lon',
-                        value_col=value_var,
-                        aggregation=aggregation,
-                        tiles=tiles,
-                        width=1000,
-                        height=600
-                    )
-                    
-                    if map_plot:
-                        import holoviews as hv
-                        hv.save(map_plot, 'temp_map.html')
-                        with open('temp_map.html', 'r') as f:
-                            html_content = f.read()
-                        st.components.v1.html(html_content, height=650)
-        
-        elif viz_type == "Comparaison multivariée":
-            st.markdown("### 📊 Analyse Multivariée Massive")
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                x_var = st.selectbox("Variable X:", df.select_dtypes(include=[np.number]).columns.tolist(), index=0)
-                y_var = st.selectbox("Variable Y:", df.select_dtypes(include=[np.number]).columns.tolist(), index=1)
-            
-            with col2:
-                color_var = st.selectbox("Variable pour la couleur:", ['continent', 'year', 'month'], index=0)
-                size_var = st.selectbox("Variable pour la taille:", ['prcp', 'wind_speed', 'solar_radiation', 'None'], index=0)
-            
-            use_hexbin = st.checkbox("Utiliser Hexbin pour l'agrégation", value=True)
-            
-            if st.button("🔍 Générer l'analyse multivariée"):
-                with st.spinner("Analyse des corrélations..."):
-                    if use_hexbin:
-                        # Créer un hexbin plot avec hvPlot
-                        plot = df.hvplot.hexbin(
-                            x=x_var,
-                            y=y_var,
-                            C=color_var if color_var != 'None' else None,
-                            width=1000,
-                            height=600,
-                            title=f"Hexbin: {y_var} vs {x_var}",
-                            gridsize=30,
-                            cmap='viridis'
-                        )
-                    else:
-                        # Scatter plot avec datashading
-                        plot = create_hvplot_large_data(
-                            df,
-                            x=x_var,
-                            y=y_var,
-                            color=color_var,
-                            datashade=True,
-                            width=1000,
-                            height=600
-                        )
-                    
-                    if plot:
-                        import holoviews as hv
-                        hv.save(plot, 'temp_multivar.html')
-                        with open('temp_multivar.html', 'r') as f:
-                            html_content = f.read()
-                        st.components.v1.html(html_content, height=650)
-                        
-                        # Ajouter des statistiques de corrélation
-                        if x_var in df.columns and y_var in df.columns:
-                            corr = df[x_var].corr(df[y_var])
-                            st.metric("Corrélation", f"{corr:.3f}")
-        
-        # Section d'information sur les technologies
-        st.markdown("---")
-        with st.expander("ℹ️ Technologies utilisées pour les visualisations massives"):
-            st.markdown("""
-            ### 🚀 Technologies de Visualisation Massive
-            
-            **Dask**: 
-            - Traitement parallèle des données
-            - Gestion de datasets plus grands que la mémoire RAM
-            - API similaire à Pandas
-            
-            **Datashader**:
-            - Rendue de millions de points en temps réel
-            - Agrégation intelligente pour éviter le surpeuplement
-            - Préservation des tendances statistiques
-            
-            **hvPlot / HoloViews**:
-            - Interface de visualisation déclarative
-            - Intégration avec Datashader
-            - Graphiques interactifs haute performance
-            
-            **Panel**:
-            - Création de dashboards interactifs
-            - Intégration avec Streamlit
-            - Widgets interactifs pour l'exploration
-            
-            **Performance**:
-            - Jusqu'à 10 millions de points visibles
-            - Temps de rendu < 2 secondes
-            - Utilisation mémoire optimisée
-            """)
+                    data.append({
+                        'date': date,
+                        'year': year,
+                        'month': month,
+                        'day': day,
+                        'day_of_year': day_of_year,
+                        'station': station,
+                        'tavg': base_temp + seasonal_variation + np.random.normal(0, 2),
+                        'tmax': base_temp + seasonal_variation + 5 + np.random.normal(0, 2),
+                        'tmin': base_temp + seasonal_variation - 5 + np.random.normal(0, 2),
+                        'prcp': max(0, np.random.exponential(5)),
+                        'humidity': np.random.uniform(30, 90),
+                        'wind_speed': np.random.uniform(0, 20),
+                        'solar_radiation': np.random.uniform(100, 800),
+                        'continent': np.random.choice(continents),
+                        'lat': np.random.uniform(-90, 90),
+                        'lon': np.random.uniform(-180, 180)
+                    })
     
-   
-
-# =============================================================
-# FONCTIONS UTILITAIRES MANQUANTES (à ajouter)
-# =============================================================
+    return pd.DataFrame(data).sample(frac=0.1)  # Prendre un échantillon
 
 def compute_kpis(df):
     """Calcule les indicateurs clés avancés."""
@@ -946,9 +237,6 @@ def compute_kpis(df):
             kpis["continents"] = 1
     
     return kpis
-
-# ... [Ajoutez ici toutes vos autres fonctions existantes comme create_temperature_evolution, etc.] ...
-
 
 # =============================================================
 # 3. FONCTIONS DE VISUALISATION AVANCÉES (ANIMATIONS)
@@ -1741,7 +1029,7 @@ def main():
         st.markdown("#### 📅 Heatmap Interactive")
         fig_heatmap = create_interactive_heatmap(df)
         st.plotly_chart(fig_heatmap, use_container_width=True, config={'displayModeBar': True, 'scrollZoom': True})
-        st.plotly_chart(fig_temp, use_container_width=True)
+        
         # Instructions pour les animations
         with st.expander("ℹ️ Comment utiliser les animations"):
             st.markdown("""
@@ -1769,7 +1057,7 @@ def main():
             with col1:
                 st.markdown("#### Évolution Temporelle Animée")
                 fig_temp = create_temperature_evolution(df)
-                
+                st.plotly_chart(fig_temp, use_container_width=True)
             
             with col2:
                 st.markdown("#### Heatmap Interactive")
