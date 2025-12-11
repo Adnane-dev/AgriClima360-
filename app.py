@@ -135,9 +135,9 @@ def process_climate_data(df):
 
 def generate_enhanced_sample_data():
     """Génère des données de démonstration enrichies."""
-    st.warning("Données réelles.")
+    st.warning("Configurez votre token NOAA pour des données réelles.")
     
-    years = list(range(2020, 2024))
+    years = list(range(2000, 2026))
     stations = [f'ST{i:03d}' for i in range(1, 21)]
     continents = ['North America', 'Europe', 'Asia', 'Africa', 'South America', 'Oceania']
     
