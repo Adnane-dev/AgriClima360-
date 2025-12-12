@@ -131,24 +131,107 @@ python src/modeling/model_analysis.py
 
 ### Stack Data Science
 
-```python
-# Traitement et analyse des données
-pandas>=2.0.0          # Manipulation de données
-numpy>=1.24.0          # Calculs numériques
-scikit-learn>=1.3.0    # Machine Learning
+```
+# =============================================================
+# REQUIREMENTS.TXT - AgriClima360
+# Versions actuellement installées dans votre environnement
+# =============================================================
 
-# Visualisation  
-matplotlib>=3.7.0      # Graphiques statiques
-seaborn>=0.12.0        # Visualisations statistiques
-plotly>=5.15.0         # Graphiques interactifs
-folium>=0.14.0         # Cartographie
+# Core Data Processing
+numpy==2.3.5
+pandas==2.3.3
 
-# Application web
-streamlit>=1.28.0      # Dashboard interactif
-altair>=5.0.0          # Grammaire de visualisation
+# Visualization
+plotly==6.5.0
+streamlit==1.52.1
 
-# Environnement de développement
-jupyter>=1.0.0         # Notebooks interactifs
+# API Requests
+requests==2.32.5
+
+# Big Data Processing
+dask[complete]==2025.11.0
+distributed  # Installé avec dask[complete]
+cloudpickle==3.1.2
+fsspec==2025.12.0
+locket==1.0.0
+partd==1.4.2
+toolz==1.1.0
+
+# Advanced Visualization
+bokeh==3.8.1
+datashader==0.18.2
+holoviews==1.22.1
+hvplot==0.12.1
+panel==1.8.4
+
+# Scientific Computing
+scipy==1.16.3
+numba==0.63.1
+llvmlite==0.46.0
+xarray==2025.12.0
+
+# Utilities
+pillow==12.0.0
+pyarrow  # Pour export Parquet
+pyviz_comms==3.0.6
+param==2.3.1
+colorcet==3.1.0
+pyct==0.6.0
+xyzservices==2025.11.0
+narwhals==2.13.0
+contourpy==1.3.3
+
+# Dependencies
+python-dateutil==2.9.0.post0
+pytz==2025.2
+tzdata==2025.2
+PyYAML==6.0.3
+Jinja2==3.1.6
+MarkupSafe==3.0.3
+tornado==6.5.3
+tqdm==4.67.1
+click==8.3.1
+colorama==0.4.6
+packaging==25.0
+typing_extensions==4.15.0
+certifi==2025.11.12
+charset-normalizer==3.4.4
+idna==3.11
+urllib3==2.6.2
+six==1.17.0
+setuptools==65.5.0
+multipledispatch==1.0.0
+
+# Markdown rendering
+Markdown==3.10
+markdown-it-py==4.0.0
+mdit-py-plugins==0.5.0
+mdurl==0.1.2
+linkify-it-py==2.0.3
+uc-micro-py==1.0.3
+bleach==6.3.0
+webencodings==0.5.1
+
+# Metadata
+importlib_metadata==8.7.0
+zipp==3.23.0
+
+# =============================================================
+# NOTES D'INSTALLATION
+# =============================================================
+# 
+# Installation complète :
+# pip install -r requirements.txt
+#
+# Installation minimale (sans Dask/Datashader) :
+# pip install numpy pandas plotly streamlit requests
+#
+# ⚠️ AVERTISSEMENT :
+# Ces versions sont très récentes et peuvent causer des 
+# problèmes de compatibilité. Si vous rencontrez des erreurs,
+# utilisez requirements-stable.txt à la place.
+#
+# =============================================================
 ```
 
 ### Analyse Spatiale
