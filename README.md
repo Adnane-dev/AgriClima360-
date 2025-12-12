@@ -13,7 +13,7 @@
 
 ## 📖 Description
 
-**AgriClima360** est une plateforme complète d'analyse prédictive des données climatiques pour l'agriculture de précision. Ce projet implémente un pipeline CRISP-DM complet avec visualisation massive des données climatiques NOAA GHCN couvrant la période 2000-2024.
+**AgriClima360** est une plateforme complète d'analyse prédictive des données climatiques pour l'agriculture de précision. Ce projet implémente un pipeline CRISP-DM complet avec visualisation massive des données climatiques NOAA GHCN couvrant la période 2000-2025.
 
 ## 🎯 Objectifs Principaux
 
