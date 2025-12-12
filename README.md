@@ -284,7 +284,7 @@ Ce projet est distribué sous licence **MIT**. Consultez le fichier [LICENSE](LI
 ## 📞 Contact
 
 - **Adnane Mahamadou Saadou** - [GitHub](https://github.com/Adnane-dev)
-- **Radhia Darghoothi** - [GitHub](https://github.com/RadhiaDarghoothi)
+- **Radhia Darghoothi** - [GitHub](https://github.com/Radhia-Darghouthi)
 
 Pour toute question ou suggestion, n'hésitez pas à ouvrir une **issue** sur GitHub.
 
