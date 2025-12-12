@@ -223,13 +223,10 @@ zipp==3.23.0
 # Installation complète :
 # pip install -r requirements.txt
 #
-# Installation minimale (sans Dask/Datashader) :
-# pip install numpy pandas plotly streamlit requests
 #
 # ⚠️ AVERTISSEMENT :
 # Ces versions sont très récentes et peuvent causer des 
-# problèmes de compatibilité. Si vous rencontrez des erreurs,
-# utilisez requirements-stable.txt à la place.
+# problèmes de compatibilité. 
 #
 # =============================================================
 ```
