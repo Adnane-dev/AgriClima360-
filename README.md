@@ -5,7 +5,7 @@
 
 **Auteurs :**
 - 👨‍💻 [Adnane Mahamadou Saadou](https://github.com/Adnane-dev)
-- 👩‍💻 [Radhia Darghoothi](https://github.com/RadhiaDarghoothi)
+- 👩‍💻 [Radhia Darghoothi](https://github.com/Radhia-Darghouthi)
 
 **Repository :** [https://github.com/Adnane-dev/AgriClima360-](https://github.com/Adnane-dev/AgriClima360-)
 
